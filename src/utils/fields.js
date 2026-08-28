@@ -24,8 +24,8 @@ function formatSingleValue(value) {
   if (typeof value === 'object') {
     // 人员: { id, name }
     if (value.name) return value.name;
-    // 超链接: { link, text }
-    if (value.link) return value.text ? `${value.text}(${value.link})` : value.link;
+    // 超链接: { link, text } → 渲染为 markdown 链接，避免展示冗长 URL
+    if (value.link) return value.text ? `[${value.text}](${value.link})` : value.link;
     // 附件: { file_token, name }
     if (value.file_token && value.name) return value.name;
     if (value.text) return value.text;
@@ -36,17 +36,41 @@ function formatSingleValue(value) {
 }
 
 /**
- * 大数值视为毫秒时间戳（多维表格日期字段的返回格式）
+ * 大数值视为毫秒时间戳（多维表格日期字段的返回格式），仅保留日期（去掉时分秒）
  */
 function formatMaybeTimestamp(num) {
   if (Number.isFinite(num) && num > 10 ** 12) {
     try {
-      return new Date(num).toLocaleString('zh-CN', { hour12: false });
+      const d = new Date(num);
+      return `${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()}`;
     } catch (e) {
       return String(num);
     }
   }
   return String(num);
+}
+
+/**
+ * 提取字段的纯文本（用于标题等场景，超链接只取 text、人员只取 name）
+ */
+function formatFieldText(value) {
+  if (Array.isArray(value)) value = value[0];
+  if (value && typeof value === 'object') {
+    if (value.text !== null && value.text !== undefined && value.text !== '') return String(value.text);
+    if (value.name) return String(value.name);
+    if (value.link) return String(value.link);
+  }
+  return formatFieldValue(value);
+}
+
+/**
+ * 将时间戳归一到当天 00:00:00（用于目标表日期字段，去掉时分秒）
+ */
+function toDateOnlyTimestamp(num) {
+  if (!Number.isFinite(num)) return num;
+  const d = new Date(num);
+  d.setHours(0, 0, 0, 0);
+  return d.getTime();
 }
 
 /**
@@ -76,5 +100,7 @@ function normalizeForWrite(value) {
 
 module.exports = {
   formatFieldValue,
+  formatFieldText,
+  toDateOnlyTimestamp,
   normalizeForWrite,
 };

@@ -1,6 +1,6 @@
 const config = require('../config');
 const { requestAPI } = require('./client');
-const { formatFieldValue } = require('../utils/fields');
+const { formatFieldValue, formatFieldText } = require('../utils/fields');
 
 // ============================================================
 // 消息发送：支持两种目标
@@ -110,13 +110,14 @@ function buildAtTag(userId) {
 }
 
 /**
- * 工单标题：TITLE_FIELD 有值则用，否则用「需求」摘要
+ * 工单标题：TITLE_FIELD 有值则用（超链接只取文本），否则用「需求1」摘要
  */
 function getTicketTitle(fields, recordId) {
-  const title = config.broadcast.titleField ? formatFieldValue(fields[config.broadcast.titleField]) : '';
+  const raw = config.broadcast.titleField ? fields[config.broadcast.titleField] : '';
+  const title = raw ? formatFieldText(raw) : '';
   if (title) return title;
 
-  const demand = formatFieldValue(fields['需求'] ?? fields['需求1']);
+  const demand = formatFieldValue(fields['需求1'] ?? fields['需求']);
   if (demand) return demand.length > 30 ? `${demand.slice(0, 30)}…` : demand;
 
   return `工单 ${recordId.slice(-6)}`;
@@ -154,7 +155,7 @@ function buildTicketOpenCard(record) {
     ...buildTicketFieldLines(fields, [config.broadcast.titleField]),
     { tag: 'hr' },
     { tag: 'markdown', content: '🙋 此工单暂未指定负责人，**有兴趣接单的同学请在群内响应**' },
-    { tag: 'markdown', content: '💡 **接单方式**：在群内发送消息 **@机器人** 即可确认接单' },
+    { tag: 'markdown', content: `💡 **接单方式**：在群内发送消息 **@${config.bot.name}** 确认接单` },
     { tag: 'note', elements: [{ tag: 'plain_text', content: '机器人会自动更新项目状态为"进行中"' }] },
   ];
 
@@ -262,7 +263,7 @@ function buildReannounceCard(record, elapsedHours, groupName) {
     ...buildTicketFieldLines(fields, [config.broadcast.titleField]),
     { tag: 'hr' },
     { tag: 'markdown', content: '🙋 **有兴趣接单的同学请在群内响应**' },
-    { tag: 'markdown', content: '💡 **接单方式**：在群内发送消息 **@机器人** 即可确认接单' },
+    { tag: 'markdown', content: `💡 **接单方式**：在群内发送消息 **@${config.bot.name}** 确认接单` },
   ];
 
   // @组长
@@ -285,6 +286,36 @@ function buildReannounceCard(record, elapsedHours, groupName) {
   };
 }
 
+/**
+ * 结单提醒卡片（审批节点=回执单：是否结单，临近理想结单时间，引导到审批界面确认结单）
+ * @param {object} record 工单记录
+ * @param {{id: string, name: string}|null} handler 当前处理人
+ */
+function buildCloseReminderCard(record, handler) {
+  const { record_id, fields } = record;
+  const title = getTicketTitle(fields, record_id);
+  const at = buildAtTag(handler?.id);
+  const approvalUrl = `https://cquqianli.feishu.cn/base/${config.bitable.sourceAppToken}?table=${config.bitable.sourceTableId}&view=viewsAll&record=${record_id}`;
+
+  const elements = [
+    { tag: 'markdown', content: `**${title}**` },
+    { tag: 'hr' },
+    { tag: 'markdown', content: `⏰ 工单临近理想结单时间，${at} **${handler?.name || ''}** 请尽快确认结单` },
+    ...buildTicketFieldLines(fields, [config.broadcast.titleField]),
+    { tag: 'hr' },
+    { tag: 'markdown', content: `👉 请前往 [审批界面](${approvalUrl}) 完成结单确认` },
+  ];
+
+  return {
+    config: { wide_screen_mode: true, enable_forward: true },
+    elements,
+    header: {
+      template: 'red',
+      title: { content: '⏰ 结单提醒', tag: 'plain_text' },
+    },
+  };
+}
+
 module.exports = {
   sendCardToChat,
   sendCardToWebhook,
@@ -296,4 +327,5 @@ module.exports = {
   buildTicketAssignCard,
   buildDailySummaryCard,
   buildReannounceCard,
+  buildCloseReminderCard,
 };

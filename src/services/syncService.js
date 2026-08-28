@@ -1,6 +1,6 @@
 const config = require('../config');
 const bitableApi = require('../feishu/bitable');
-const { normalizeForWrite } = require('../utils/fields');
+const { normalizeForWrite, toDateOnlyTimestamp } = require('../utils/fields');
 
 /**
  * 同步服务：将工单记录搬运到项目看板
@@ -133,9 +133,9 @@ function buildTargetFields(sourceFields, sourceRecordId, parentRecordId) {
     targetFields['category'] = sourceFields['category'];
   }
 
-  // 3. ddl（理想结单时间）
+  // 3. ddl（理想结单时间，去掉时分秒）
   if (sourceFields['理想结单时间']) {
-    targetFields['ddl'] = sourceFields['理想结单时间'];
+    targetFields['ddl'] = toDateOnlyTimestamp(sourceFields['理想结单时间']);
   }
 
   // 4. fileToken（需求）

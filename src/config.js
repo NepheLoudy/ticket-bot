@@ -150,6 +150,21 @@ const config = {
     userGroups: parseUserGroups(process.env.USER_GROUPS),
   },
 
+  // 审批节点监听（替代「申请状态」作为播报与超时判断依据）
+  approvalNode: {
+    field: process.env.APPROVAL_NODE_FIELD || '审批节点',
+    // 触发播报 / 6小时未接单判断的节点值
+    acceptValue: process.env.APPROVAL_NODE_ACCEPT_VALUE || '有组员接单后通过',
+    // 触发结单提醒的节点值
+    closeValue: process.env.APPROVAL_NODE_CLOSE_VALUE || '回执单：是否结单',
+  },
+
+  // 结单提醒（临近理想结单时间时，应用机器人先私聊，未结单再转群引导）
+  closeReminder: {
+    deadlineField: process.env.DEADLINE_FIELD || '理想结单时间',
+    leadDays: Number(process.env.CLOSE_REMINDER_LEAD_DAYS || 1),
+  },
+
   // 组长映射（组别名:组长open_id或姓名）
   groupLeaders: parseGroupLeaders(process.env.GROUP_LEADERS),
 

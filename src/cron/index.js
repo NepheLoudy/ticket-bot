@@ -7,10 +7,10 @@ const {
   sendTextToUser,
   describeTarget,
   buildDailySummaryCard,
-  buildTimeoutReminderCard,
   buildReannounceCard,
+  buildCloseReminderCard,
 } = require('../feishu/bot');
-const { formatFieldValue } = require('../utils/fields');
+const { formatFieldValue, formatFieldText } = require('../utils/fields');
 
 const broadcastHistory = [];
 
@@ -127,24 +127,24 @@ async function runSummaryWithRetry() {
 }
 
 /**
- * 超时检查：查找超过 6 小时未结单的工单
+ * 超时检查：查找超过 6 小时未接单的工单
  * 条件：
- *   - 申请状态 = "审批中"
+ *   - 审批节点 = 有组员接单后通过
  *   - 当前处理人 有值
  *   - 距离发起时间超过 6 小时
  */
 async function checkTimeoutTickets() {
   console.log('[超时检查] 开始检查超时工单...');
 
-  // 查询所有审批中的工单
-  const filter = `CurrentValue.[申请状态] = "审批中"`;
+  // 查询所有审批节点为「有组员接单后通过」的工单
+  const filter = `CurrentValue.[${config.approvalNode.field}] = "${config.approvalNode.acceptValue}"`;
   const records = await bitableApi.listAllRecords(
     config.bitable.sourceAppToken,
     config.bitable.sourceTableId,
     filter
   );
 
-  console.log(`[超时检查] 找到 ${records.length} 条审批中的工单`);
+  console.log(`[超时检查] 找到 ${records.length} 条「${config.approvalNode.acceptValue}」的工单`);
 
   const now = Date.now();
   const timeoutMs = TIMEOUT_CONFIG.hours * 60 * 60 * 1000;
@@ -198,7 +198,7 @@ async function checkTimeoutTickets() {
 async function handleTimeoutTicket(ticketInfo) {
   const { record, currentHandler, initiator, assignValue, groups, elapsedHours } = ticketInfo;
   const recordId = record.record_id;
-  const title = record.fields['申请编号'] || record.fields['需求'] || `工单-${recordId.slice(-6)}`;
+  const title = formatFieldText(record.fields['申请编号']) || formatFieldValue(record.fields['需求1'] ?? record.fields['需求']) || `工单-${recordId.slice(-6)}`;
 
   console.log(`[超时处理] 工单 ${recordId}: 当前处理人=${currentHandler.name}, 发起人=${initiator?.name || '未知'}, 超时=${elapsedHours}小时`);
 
@@ -298,6 +298,133 @@ async function handleTimeoutTicket(ticketInfo) {
   return { branch: 'reannounce', success: results.some(r => r.success), results };
 }
 
+// ============================================================
+// 结单提醒（审批节点=回执单：是否结单，临近理想结单时间）
+//   1. 先由机器人本人（应用机器人，非 webhook）私聊当前处理人
+//   2. 若下次检查仍未结单，则转对应群组引导到审批界面确认结单
+// ============================================================
+const closingRemindState = new Map(); // recordId -> { dmTime, groupNotified }
+
+async function checkClosingTickets() {
+  console.log('[结单提醒] 开始检查临近结单时间的工单...');
+
+  const filter = `CurrentValue.[${config.approvalNode.field}] = "${config.approvalNode.closeValue}"`;
+  const records = await bitableApi.listAllRecords(
+    config.bitable.sourceAppToken,
+    config.bitable.sourceTableId,
+    filter
+  );
+
+  console.log(`[结单提醒] 找到 ${records.length} 条「${config.approvalNode.closeValue}」的工单`);
+
+  const now = Date.now();
+  const leadMs = config.closeReminder.leadDays * 24 * 60 * 60 * 1000;
+  const dueRecords = [];
+
+  for (const record of records) {
+    const fields = record.fields;
+    const handler = fields['当前处理人']?.[0];
+    if (!handler || !handler.id) continue;
+
+    const deadline = fields[config.closeReminder.deadlineField];
+    if (!deadline) continue;
+
+    const deadlineTs = new Date(deadline).getTime();
+    if (isNaN(deadlineTs)) continue;
+
+    // 进入提醒窗口：now >= deadline - leadDays
+    if (now < deadlineTs - leadMs) continue;
+
+    dueRecords.push({ record, handler, groups: fields['面向组别'] || [], deadlineTs });
+  }
+
+  console.log(`[结单提醒] 发现 ${dueRecords.length} 条临近结单的工单`);
+  return dueRecords;
+}
+
+async function handleClosingTicket(ticketInfo) {
+  const { record, handler, groups } = ticketInfo;
+  const recordId = record.record_id;
+  const title = formatFieldText(record.fields['申请编号']) || formatFieldValue(record.fields['需求1'] ?? record.fields['需求']) || `工单-${recordId.slice(-6)}`;
+  const approvalUrl = `https://cquqianli.feishu.cn/base/${config.bitable.sourceAppToken}?table=${config.bitable.sourceTableId}&view=viewsAll&record=${recordId}`;
+
+  const state = closingRemindState.get(recordId);
+
+  // 第一次：私聊当前处理人
+  if (!state) {
+    console.log(`[结单提醒] 私聊当前处理人: ${handler.name}(${handler.id})`);
+    try {
+      await sendTextToUser(
+        handler.id,
+        `⏰ 工单「${title}」临近理想结单时间，请尽快完成结单\n\n` +
+        `请前往审批界面确认结单：\n${approvalUrl}`
+      );
+      closingRemindState.set(recordId, { dmTime: Date.now(), groupNotified: false });
+      return { branch: 'dm', success: true };
+    } catch (err) {
+      console.error(`[结单提醒] 私聊失败:`, err.message);
+      return { branch: 'dm', success: false, error: err.message };
+    }
+  }
+
+  // 已私聊过但未结单：转群引导
+  if (!state.groupNotified) {
+    console.log(`[结单提醒] 已私聊未结单，转群引导: ${recordId}`);
+    const targets = ticketService.collectTargets(groups);
+    if (targets.length === 0) {
+      console.log(`[结单提醒] 无可用播报目标，跳过`);
+      return { branch: 'group', success: false, error: '无播报目标' };
+    }
+
+    const results = [];
+    for (const target of targets) {
+      try {
+        const card = buildCloseReminderCard(record, handler);
+        await sendCardToTarget(target, card);
+        results.push({ target: describeTarget(target), success: true });
+      } catch (err) {
+        console.error(`[结单提醒] 群引导发送失败: ${describeTarget(target)}`, err.message);
+        results.push({ target: describeTarget(target), success: false, error: err.message });
+      }
+    }
+
+    state.groupNotified = true;
+    return { branch: 'group', success: results.some(r => r.success), results };
+  }
+
+  return { branch: 'skip', success: false, note: '已提醒过' };
+}
+
+async function runCloseReminderCheck() {
+  console.log('[结单提醒] 开始执行结单提醒检查任务...');
+
+  try {
+    const dueTickets = await checkClosingTickets();
+    if (dueTickets.length === 0) {
+      console.log('[结单提醒] 无临近结单工单');
+      return { checked: 0, due: 0, handled: 0 };
+    }
+
+    const results = [];
+    for (const ticket of dueTickets) {
+      try {
+        const result = await handleClosingTicket(ticket);
+        results.push({ recordId: ticket.record.record_id, ...result });
+      } catch (err) {
+        console.error(`[结单提醒] 处理工单 ${ticket.record.record_id} 失败:`, err.message);
+        results.push({ recordId: ticket.record.record_id, success: false, error: err.message });
+      }
+    }
+
+    const handled = results.filter(r => r.success).length;
+    console.log(`[结单提醒] 完成: 检查=${dueTickets.length} 处理成功=${handled}`);
+    return { checked: dueTickets.length, due: dueTickets.length, handled, results };
+  } catch (err) {
+    console.error('[结单提醒] 任务执行失败:', err.message);
+    throw err;
+  }
+}
+
 /**
  * 执行超时检查任务
  */
@@ -335,6 +462,7 @@ async function runTimeoutCheck() {
 
 let summaryTask = null;
 let timeoutTask = null;
+let closeReminderTask = null;
 
 function startCronJobs() {
   // 每日汇总任务
@@ -374,9 +502,26 @@ function startCronJobs() {
   });
 
   console.log(`[定时任务] 超时检查已启动，调度规则: ${TIMEOUT_CONFIG.checkInterval} (Asia/Shanghai)`);
+
+  // 结单提醒任务（每小时执行一次）
+  if (closeReminderTask) {
+    console.log('[定时任务] 结单提醒任务已存在，先停止旧任务');
+    closeReminderTask.stop();
+  }
+
+  closeReminderTask = cron.schedule(TIMEOUT_CONFIG.checkInterval, () => {
+    console.log('[定时任务] 触发结单提醒检查');
+    runCloseReminderCheck().catch(err => {
+      console.error('[定时任务] 结单提醒检查失败:', err.message);
+    });
+  }, {
+    timezone: 'Asia/Shanghai',
+  });
+
+  console.log(`[定时任务] 结单提醒已启动，调度规则: ${TIMEOUT_CONFIG.checkInterval} (Asia/Shanghai)`);
   console.log(`[定时任务] 当前时间: ${new Date().toLocaleString('zh-CN')}`);
 
-  return { summaryTask, timeoutTask };
+  return { summaryTask, timeoutTask, closeReminderTask };
 }
 
 function stopCronJobs() {
@@ -389,6 +534,11 @@ function stopCronJobs() {
     timeoutTask.stop();
     timeoutTask = null;
     console.log('[定时任务] 超时检查已停止');
+  }
+  if (closeReminderTask) {
+    closeReminderTask.stop();
+    closeReminderTask = null;
+    console.log('[定时任务] 结单提醒已停止');
   }
 }
 
@@ -403,6 +553,11 @@ function getCronStatus() {
       schedule: TIMEOUT_CONFIG.checkInterval,
       config: `超时阈值: ${TIMEOUT_CONFIG.hours} 小时`,
     },
+    closeReminder: {
+      running: !!closeReminderTask,
+      schedule: TIMEOUT_CONFIG.checkInterval,
+      config: `提前 ${config.closeReminder.leadDays} 天提醒结单`,
+    },
   };
 }
 
@@ -415,9 +570,12 @@ module.exports = {
   stopCronJobs,
   runSummary: runSummaryWithRetry,
   runTimeoutCheck,
+  runCloseReminderCheck,
   getCronStatus,
   getSummaryHistory,
   getSummaryTargets,
   checkTimeoutTickets,
   handleTimeoutTicket,
+  checkClosingTickets,
+  handleClosingTicket,
 };

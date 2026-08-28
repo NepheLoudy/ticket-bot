@@ -7,7 +7,7 @@ const {
   buildTicketOpenCard,
   buildTicketAssignCard,
 } = require('../feishu/bot');
-const { formatFieldValue } = require('../utils/fields');
+const { formatFieldValue, formatFieldText } = require('../utils/fields');
 
 // ============================================================
 // 工单事件处理：
@@ -27,8 +27,8 @@ const broadcastHistory = [];
 // 已播报的工单 recordId（跨创建/发布事件去重，避免同一工单重复播报）
 const broadcastedRecords = new Set();
 
-// 工单生效状态：申请状态变为该值时触发播报（对应项目看板 in_progress）
-const ACTIVATION_STATUS = '审批中';
+// 播报触发节点：审批节点等于该值时触发播报（等价于之前「申请状态=审批中」）
+const ACTIVATION_NODE_VALUE = config.approvalNode.acceptValue;
 
 // 待接单工单映射：chat_id → [{ recordId, sourceRecordId, title }]
 // 用于接单确认时查找对应工单
@@ -177,15 +177,15 @@ async function handleRecordCreate(recordId, fields) {
   // 1. category 有值时搬运到项目看板
   const syncResult = await syncIfCategoryPresent(record, 'create');
 
-  // 2. 申请状态为「审批中」时播报
+  // 2. 审批节点为「有组员接单后通过」时播报
   let broadcastResult = { broadcast: 0 };
   if (config.broadcast.on.includes('create')) {
-    const statusField = config.broadcast.statusField;
-    const status = statusField ? record.fields[statusField] : '';
-    if (status === ACTIVATION_STATUS) {
+    const nodeField = config.approvalNode.field;
+    const node = nodeField ? record.fields[nodeField] : '';
+    if (node === ACTIVATION_NODE_VALUE) {
       broadcastResult = await broadcastTicket(record, 'create');
     } else {
-      console.log(`[工单事件] 创建时申请状态为「${status}」，暂不播报（等待进入「审批中」）`);
+      console.log(`[工单事件] 创建时审批节点为「${node}」，暂不播报（等待进入「${ACTIVATION_NODE_VALUE}」）`);
     }
   }
 
@@ -276,11 +276,11 @@ async function handleRecordUpdate(recordId, fields, oldFields) {
   // 1. category 有值时搬运到项目看板（同步映射字段，含 status）
   const syncResult = await syncIfCategoryPresent(record, 'update');
 
-  // 2. 申请状态为「审批中」时触发播报（去重保证只播一次）
+  // 2. 审批节点为「有组员接单后通过」时触发播报（去重保证只播一次）
   if (config.broadcast.on.includes('create')) {
-    const statusField = config.broadcast.statusField;
-    const status = statusField ? record.fields[statusField] : '';
-    if (status === ACTIVATION_STATUS) {
+    const nodeField = config.approvalNode.field;
+    const node = nodeField ? record.fields[nodeField] : '';
+    if (node === ACTIVATION_NODE_VALUE) {
       await broadcastTicket(record, 'publish');
     }
   }
@@ -388,10 +388,11 @@ async function handleAcceptOrder(chatId, userId, userName, message) {
  * 获取工单标题
  */
 function getTicketTitle(fields, recordId) {
-  const title = config.broadcast.titleField ? formatFieldValue(fields[config.broadcast.titleField]) : '';
+  const raw = config.broadcast.titleField ? fields[config.broadcast.titleField] : '';
+  const title = raw ? formatFieldText(raw) : '';
   if (title) return title;
 
-  const demand = formatFieldValue(fields['需求'] ?? fields['需求1']);
+  const demand = formatFieldValue(fields['需求1'] ?? fields['需求']);
   if (demand) return demand.length > 30 ? `${demand.slice(0, 30)}…` : demand;
 
   return `工单 ${recordId.slice(-6)}`;
