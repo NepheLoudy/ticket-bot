@@ -1,0 +1,10 @@
+{
+  "scopes": [
+    "bitable:app",
+    "im:message",
+    "im:message:send_as_bot",
+    "im:message.p2p_msg:readonly",
+    "im:chat",
+    "contact:user.base:readonly"
+  ]
+}

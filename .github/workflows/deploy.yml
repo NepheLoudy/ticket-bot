@@ -1,0 +1,81 @@
+name: Deploy
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  deploy-server:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup SSH
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+      - name: Deploy to server
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_PORT: ${{ secrets.SERVER_PORT }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          APP_ID: ${{ secrets.APP_ID }}
+          APP_SECRET: ${{ secrets.APP_SECRET }}
+          BITABLE_APP_TOKEN: ${{ secrets.BITABLE_APP_TOKEN }}
+          SOURCE_TABLE_ID: ${{ secrets.SOURCE_TABLE_ID }}
+          TARGET_TABLE_ID: ${{ secrets.TARGET_TABLE_ID }}
+          GROUP_ROUTES: ${{ secrets.GROUP_ROUTES }}
+          GROUP_LEADERS: ${{ secrets.GROUP_LEADERS }}
+        run: |
+          ssh -o StrictHostKeyChecking=no -p $SERVER_PORT $SERVER_USER@$SERVER_HOST "
+            if [ ! -d $DEPLOY_PATH ]; then
+              mkdir -p $DEPLOY_PATH
+              cd $DEPLOY_PATH
+              git init
+              git remote add origin https://github.com/NepheLoudy/ticket-bot.git
+            fi
+            cd $DEPLOY_PATH
+            git fetch origin main
+            git reset --hard origin/main
+
+            npm install --production
+
+            cat > .env << EOF
+          PORT=3003
+          APP_ID=${APP_ID}
+          APP_SECRET=${APP_SECRET}
+          BITABLE_APP_TOKEN=${BITABLE_APP_TOKEN}
+          SOURCE_TABLE_ID=${SOURCE_TABLE_ID}
+          TARGET_BITABLE_APP_TOKEN=
+          TARGET_TABLE_ID=${TARGET_TABLE_ID}
+          FIELD_MAPPING=
+          SYNC_KEY_FIELD=源记录ID
+          CATEGORY_FIELD=category
+          ROUTE_FIELD=面向组别
+          GROUP_ROUTES=${GROUP_ROUTES}
+          DEFAULT_CHAT_ID=
+          TITLE_FIELD=申请编号
+          STATUS_FIELD=申请状态
+          PENDING_STATUS=
+          DISPLAY_FIELDS=需求,发起人,理想结单时间,发起人部门
+          ASSIGN_FIELD=是否指定人员负责
+          ASSIGN_YES_VALUE=是
+          ASSIGN_NO_VALUE=否
+          ASSIGNEE_FIELD=指定负责人
+          USER_GROUPS=
+          GROUP_LEADERS=${GROUP_LEADERS}
+          BROADCAST_ON=create
+          FEISHU_USE_LONG_CONNECTION=true
+          FEISHU_VERIFICATION_TOKEN=
+          FEISHU_ENCRYPT_KEY=
+          BOT_NAME=工单机器人
+          CRON_SCHEDULE=
+          EOF
+
+            pm2 delete ticket-bot 2>/dev/null || true
+            pm2 start src/index.js --name ticket-bot
+            pm2 save
+          "
