@@ -1,16 +1,26 @@
 /**
- * 一键部署脚本：提交代码到 GitHub 并部署到 NAS
+ * 统一部署脚本：一条命令完成「代码进 Git + 配置进 NAS + 部署」
  *
  * 用法：
- *   node push.js "提交说明"   提交并部署
- *   node push.js              使用默认提交说明 "update: 代码更新"
+ *   npm run push "提交说明"   提交并部署
+ *   npm run push              使用默认提交说明 "update: 代码更新"
+ *
+ * 流程：
+ *   [1/4] 代码提交推送到 GitHub（失败则标记，稍后改走 SFTP 直传）
+ *   [2/4] 部署代码到 NAS（git push 成功走 git fetch，失败走 SFTP 打包直传）
+ *   [3/4] 上传 .env 到 NAS（含飞书密钥，只单独进 NAS，绝不进 git）
+ *   [4/4] npm install + 重启服务
  */
 const { spawnSync } = require('child_process');
 const { Client } = require('ssh2');
+const os = require('os');
+const path = require('path');
 
 const commitMessage = process.argv[2] || 'update: 代码更新';
+const TAR_NAME = 'ticket-bot-deploy.tar.gz';
+const TAR_LOCAL = path.join(os.tmpdir(), TAR_NAME);
+const TAR_REMOTE = '/tmp/' + TAR_NAME;
 
-// NAS 连接配置
 const nasConfig = {
   host: '10.253.33.233',
   port: 8500,
@@ -18,48 +28,42 @@ const nasConfig = {
   password: 'cquqianli2026',
 };
 
-function run(cmd, args) {
-  console.log('>', cmd, args.join(' '));
-  const r = spawnSync(cmd, args, { stdio: 'inherit' });
-  if (r.status !== 0) {
-    console.error(`\n命令失败: ${cmd} ${args.join(' ')}`);
-    process.exit(r.status || 1);
-  }
+// ============ [1/4] 代码提交推送到 GitHub ============
+console.log('========== [1/4] 代码提交推送到 GitHub ==========');
+
+const add = spawnSync('git', ['add', '-A'], { stdio: 'inherit' });
+if (add.status !== 0) {
+  console.error('git add 失败');
+  process.exit(1);
 }
 
-// ============ 第一步：提交并推送到 GitHub ============
-console.log('========== [1/2] 提交并推送代码到 GitHub ==========');
-
-run('git', ['add', '-A']);
-
-// 检查是否有待提交的改动，避免空 commit 报错
 const hasChanges = spawnSync('git', ['diff', '--cached', '--quiet']).status !== 0;
 if (hasChanges) {
-  run('git', ['commit', '-m', commitMessage]);
+  const commit = spawnSync('git', ['commit', '-m', commitMessage], { stdio: 'inherit' });
+  if (commit.status !== 0) {
+    console.error('git commit 失败');
+    process.exit(1);
+  }
 } else {
   console.log('(无待提交改动，跳过 commit)');
 }
 
-run('git', ['push']);
+const push = spawnSync('git', ['push'], { stdio: 'inherit' });
+const gitPushed = push.status === 0;
+if (gitPushed) {
+  console.log('✓ git push 成功，NAS 将通过 git fetch 拉取代码');
+} else {
+  console.log('⚠ git push 失败（本地无法访问 GitHub 443），改用 SFTP 直传代码到 NAS');
+}
 
-// ============ 第二步：部署到 NAS ============
-console.log('\n========== [2/2] 部署到 NAS ==========');
-
-const commands = [
-  // 首次部署：目录不存在则 clone；后续更新：fetch + reset
-  // 注意：NAS 只能通过 SSH 访问 GitHub（443 端口不通），必须用 git@github.com: 形式
-  'if [ -d /opt/ticket-bot/.git ] && git -C /opt/ticket-bot rev-parse --verify HEAD >/dev/null 2>&1; then cd /opt/ticket-bot && git remote set-url origin git@github.com:NepheLoudy/ticket-bot.git && git fetch origin main && git reset --hard origin/main; else rm -rf /opt/ticket-bot && git clone git@github.com:NepheLoudy/ticket-bot.git /opt/ticket-bot; fi',
-  'cd /opt/ticket-bot && npm install --production',
-  // 已部署则重启，未部署则启动
-  'pm2 restart ticket-bot 2>/dev/null || pm2 start /opt/ticket-bot/src/index.js --name ticket-bot',
-  'pm2 save',
-];
+// ============ 连接 NAS ============
+console.log('\n========== [2/4] 连接 NAS 部署代码 ==========');
 
 const conn = new Client();
 
 conn.on('ready', () => {
-  console.log('SSH 连接成功\n');
-  execNext(0);
+  console.log('SSH 连接成功');
+  deployCode();
 });
 
 conn.on('error', (err) => {
@@ -67,24 +71,14 @@ conn.on('error', (err) => {
   process.exit(1);
 });
 
-function execNext(i) {
-  if (i >= commands.length) {
-    console.log('\n部署完成，服务状态如下：');
-    conn.exec('pm2 list', (err, stream) => {
-      if (err) { conn.end(); return; }
-      stream.on('data', (d) => process.stdout.write(d.toString()));
-      stream.on('close', () => conn.end());
-    });
-    return;
-  }
-
-  const cmd = commands[i];
+// 执行单条命令（成功回调 cb）
+function exec(cmd, cb) {
   console.log('>', cmd);
   conn.exec(cmd, (err, stream) => {
     if (err) {
       console.error('执行失败:', err.message);
       conn.end();
-      return;
+      process.exit(1);
     }
     stream.on('data', (d) => process.stdout.write(d.toString()));
     stream.stderr.on('data', (d) => process.stderr.write(d.toString()));
@@ -94,7 +88,98 @@ function execNext(i) {
         conn.end();
         process.exit(code);
       }
-      execNext(i + 1);
+      cb();
+    });
+  });
+}
+
+// 部署代码（git 或 SFTP 两种方式）
+function deployCode() {
+  if (gitPushed) {
+    // git 方式：NAS 从 GitHub 拉取（SSH 协议）
+    const cmd = 'cd /opt/ticket-bot && '
+      + 'if [ ! -d .git ]; then git init; fi; '
+      + 'git remote set-url origin git@github.com:NepheLoudy/ticket-bot.git 2>/dev/null || git remote add origin git@github.com:NepheLoudy/ticket-bot.git; '
+      + 'git fetch origin main && git reset --hard origin/main';
+    exec(cmd, () => npmInstall());
+  } else {
+    // SFTP 方式：本地打包直传
+    console.log('本地打包代码...');
+    const pack = spawnSync('tar', [
+      '-czf', TAR_LOCAL,
+      '--exclude=node_modules',
+      '--exclude=.git',
+      '--exclude=.env',
+      '--exclude=logs',
+      '--exclude=*.log',
+      '--exclude=' + TAR_NAME,
+      '.',
+    ], { stdio: 'inherit', cwd: __dirname });
+    if (pack.status !== 0) {
+      console.error('打包失败');
+      conn.end();
+      process.exit(1);
+    }
+
+    conn.sftp((err, sftp) => {
+      if (err) {
+        console.error('SFTP 失败:', err.message);
+        conn.end();
+        process.exit(1);
+      }
+      console.log('上传代码包到 NAS...');
+      sftp.fastPut(TAR_LOCAL, TAR_REMOTE, (err2) => {
+        if (err2) {
+          console.error('代码上传失败:', err2.message);
+          conn.end();
+          process.exit(1);
+        }
+        console.log('✓ 代码包已上传');
+        const cmd = 'rm -rf /opt/ticket-bot/.git /opt/ticket-bot/* /opt/ticket-bot/.[!.]* 2>/dev/null || true; '
+          + 'tar -xzf ' + TAR_REMOTE + ' -C /opt/ticket-bot';
+        exec(cmd, () => npmInstall());
+      });
+    });
+  }
+}
+
+// npm install
+function npmInstall() {
+  console.log('\n安装依赖...');
+  exec('cd /opt/ticket-bot && npm install --production', () => uploadEnv());
+}
+
+// ============ [3/4] 上传 .env ============
+function uploadEnv() {
+  console.log('\n========== [3/4] 上传 .env 到 NAS ==========');
+  conn.sftp((err, sftp) => {
+    if (err) {
+      console.error('SFTP 失败:', err.message);
+      conn.end();
+      process.exit(1);
+    }
+    sftp.fastPut(path.join(__dirname, '.env'), '/opt/ticket-bot/.env', (err2) => {
+      if (err2) {
+        console.error('.env 上传失败:', err2.message);
+        conn.end();
+        process.exit(1);
+      }
+      console.log('✓ .env 已上传到 NAS（含组别路由配置）');
+      restart();
+    });
+  });
+}
+
+// ============ [4/4] 重启服务 ============
+function restart() {
+  console.log('\n========== [4/4] 重启服务 ==========');
+  const cmd = 'pm2 restart ticket-bot --update-env 2>/dev/null || pm2 start /opt/ticket-bot/src/index.js --name ticket-bot; pm2 save';
+  exec(cmd, () => {
+    console.log('\n✅ 部署完成，服务状态：');
+    conn.exec('pm2 list', (err, stream) => {
+      if (err) { conn.end(); return; }
+      stream.on('data', (d) => process.stdout.write(d.toString()));
+      stream.on('close', () => conn.end());
     });
   });
 }
