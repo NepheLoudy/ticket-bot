@@ -134,7 +134,7 @@ function buildTicketFieldLines(fields, exclude = []) {
     let text = formatFieldValue(fields[name]);
     if (!text) continue;
     if (text.length > 200) text = `${text.slice(0, 200)}…`;
-    lines.push(`**${name}**: ${text}`);
+    lines.push({ tag: 'markdown', content: `**${name}**: ${text}` });
   }
   // 最多展示 15 行，避免卡片过长
   return lines.slice(0, 15);
