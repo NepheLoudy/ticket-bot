@@ -35,7 +35,7 @@ jobs:
               mkdir -p $DEPLOY_PATH
               cd $DEPLOY_PATH
               git init
-              git remote add origin https://github.com/NepheLoudy/ticket-bot.git
+              git remote add origin git@github.com:NepheLoudy/ticket-bot.git
             fi
             cd $DEPLOY_PATH
             git fetch origin main

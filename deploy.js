@@ -39,7 +39,7 @@ function runGitCommands() {
 const commands = [
   { cmd: 'mkdir -p /opt/ticket-bot', sudo: true },
   { cmd: 'chown -R qianli:qianli /opt/ticket-bot', sudo: true },
-  { cmd: 'cd /opt/ticket-bot && if [ -d .git ]; then git fetch origin main && git reset --hard origin/main; else git init && git remote add origin https://github.com/NepheLoudy/ticket-bot.git && git fetch origin main && git reset --hard origin/main; fi', sudo: false },
+  { cmd: 'cd /opt/ticket-bot && if [ -d .git ]; then git fetch origin main && git reset --hard origin/main; else git init && git remote add origin git@github.com:NepheLoudy/ticket-bot.git && git fetch origin main && git reset --hard origin/main; fi', sudo: false },
   { cmd: 'cd /opt/ticket-bot && npm install --production', sudo: false },
   { cmd: `cat > /opt/ticket-bot/.env << 'ENVEOF'
 PORT=3003

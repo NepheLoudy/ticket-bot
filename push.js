@@ -47,7 +47,8 @@ console.log('\n========== [2/2] 部署到 NAS ==========');
 
 const commands = [
   // 首次部署：目录不存在则 clone；后续更新：fetch + reset
-  'if [ -d /opt/ticket-bot/.git ]; then cd /opt/ticket-bot && git fetch origin main && git reset --hard origin/main; else git clone https://github.com/NepheLoudy/ticket-bot.git /opt/ticket-bot; fi',
+  // 注意：NAS 只能通过 SSH 访问 GitHub（443 端口不通），必须用 git@github.com: 形式
+  'if [ -d /opt/ticket-bot/.git ] && git -C /opt/ticket-bot rev-parse --verify HEAD >/dev/null 2>&1; then cd /opt/ticket-bot && git remote set-url origin git@github.com:NepheLoudy/ticket-bot.git && git fetch origin main && git reset --hard origin/main; else rm -rf /opt/ticket-bot && git clone git@github.com:NepheLoudy/ticket-bot.git /opt/ticket-bot; fi',
   'cd /opt/ticket-bot && npm install --production',
   // 已部署则重启，未部署则启动
   'pm2 restart ticket-bot 2>/dev/null || pm2 start /opt/ticket-bot/src/index.js --name ticket-bot',
