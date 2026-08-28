@@ -146,6 +146,8 @@ const config = {
     noValue: process.env.ASSIGN_NO_VALUE || '否',
     // 指定负责人字段（人员类型）
     assigneeField: process.env.ASSIGNEE_FIELD || '',
+    // 接单确认后，将接单人写入源表该字段（人员类型）
+    supplementField: process.env.SUPPLEMENT_ASSIGNEE_FIELD || '补充负责人',
     // 人员所属组别映射（姓名或open_id:组别名），优先级最高
     userGroups: parseUserGroups(process.env.USER_GROUPS),
   },

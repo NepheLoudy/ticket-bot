@@ -351,6 +351,22 @@ async function handleAcceptOrder(chatId, userId, userName, message) {
     await syncService.updateProjectStatus(sourceRecordId, 'in_progress');
     console.log(`[接单确认] 项目状态更新为 in_progress`);
 
+    // 2.5 写入「补充负责人」字段（接单人，尽力而为）
+    const supplementField = config.assign.supplementField;
+    if (supplementField) {
+      try {
+        await bitableApi.updateRecord(
+          config.bitable.sourceAppToken,
+          config.bitable.sourceTableId,
+          sourceRecordId,
+          { [supplementField]: [{ id: userId }] }
+        );
+        console.log(`[接单确认] 已写入补充负责人: ${userName}(${userId})`);
+      } catch (supplementErr) {
+        console.error(`[接单确认] 写入补充负责人失败:`, supplementErr.message);
+      }
+    }
+
     // 3. 从待接单列表中移除
     pendingList.pop();
     if (pendingList.length === 0) {
