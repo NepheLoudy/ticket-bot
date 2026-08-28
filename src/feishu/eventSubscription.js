@@ -44,21 +44,28 @@ function startEventSubscription() {
       try {
         const evt = data?.event || data;
         const tableId = evt?.table_id;
-        const recordId = evt?.record_id;
-        const changeType = evt?.change_type || evt?.changeType || evt?.action;
 
-        console.log(`[事件订阅] 收到多维表格事件: table=${tableId}, change=${changeType}, record=${recordId}`);
+        console.log(`[事件订阅] 收到多维表格事件: table=${tableId}`);
 
         // 只处理源表的记录变更
         if (config.bitable.sourceTableId && tableId !== config.bitable.sourceTableId) {
           return;
         }
 
-        const t = String(changeType || '').toLowerCase();
-        if (['add', 'create', 'created', 'insert'].includes(t)) {
-          await handleRecordCreate(recordId);
-        } else if (['update', 'updated', 'modify', 'modified', 'edit', 'edited'].includes(t)) {
-          await handleRecordUpdate(recordId);
+        // 事件体结构：event.action_list[] 内含 { action, record_id, before_value, after_value }
+        const actionList = evt?.action_list || [];
+        for (const item of actionList) {
+          const recordId = item?.record_id;
+          const action = item?.action;
+
+          console.log(`[事件订阅] 记录变更: record=${recordId}, action=${action}`);
+
+          if (action === 'record_added') {
+            await handleRecordCreate(recordId);
+          } else if (action === 'record_edited') {
+            await handleRecordUpdate(recordId);
+          }
+          // record_deleted 暂不处理
         }
       } catch (err) {
         console.error('[事件订阅] 处理多维表格事件失败:', err.message);
