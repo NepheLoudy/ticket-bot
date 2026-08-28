@@ -24,6 +24,12 @@ const recentCreateEvents = new Map(); // record_id -> timestamp
 // 播报历史（内存，供 API 查询）
 const broadcastHistory = [];
 
+// 已播报的工单 recordId（跨创建/发布事件去重，避免同一工单重复播报）
+const broadcastedRecords = new Set();
+
+// 工单生效状态：申请状态变为该值时触发播报（对应项目看板 in_progress）
+const ACTIVATION_STATUS = '审批中';
+
 // 待接单工单映射：chat_id → [{ recordId, sourceRecordId, title }]
 // 用于接单确认时查找对应工单
 const pendingOrdersByChat = new Map();
@@ -166,17 +172,39 @@ async function handleRecordCreate(recordId, fields) {
   recentCreateEvents.set(recordId, Date.now());
 
   const record = await loadRecord(recordId, fields);
-  const { fields: f } = record;
   console.log(`[工单事件] 新建工单: ${recordId}`);
 
   // 1. category 有值时搬运到项目看板
   const syncResult = await syncIfCategoryPresent(record, 'create');
 
-  // 2. 按是否指定人员负责分支播报
-  if (!config.broadcast.on.includes('create')) {
-    return { broadcast: 0, sync: syncResult };
+  // 2. 申请状态为「审批中」时播报
+  let broadcastResult = { broadcast: 0 };
+  if (config.broadcast.on.includes('create')) {
+    const statusField = config.broadcast.statusField;
+    const status = statusField ? record.fields[statusField] : '';
+    if (status === ACTIVATION_STATUS) {
+      broadcastResult = await broadcastTicket(record, 'create');
+    } else {
+      console.log(`[工单事件] 创建时申请状态为「${status}」，暂不播报（等待进入「审批中」）`);
+    }
   }
 
+  return { ...broadcastResult, sync: syncResult };
+}
+
+/**
+ * 播报工单（按「是否指定人员负责」分支）
+ * @param {object} record 源记录 { record_id, fields }
+ * @param {string} scene 场景标识（create/publish）
+ */
+async function broadcastTicket(record, scene) {
+  const recordId = record.record_id;
+  if (broadcastedRecords.has(recordId)) {
+    console.log(`[工单事件] 工单 ${recordId} 已播报过，跳过重复播报`);
+    return { broadcast: 0, note: '已播报过' };
+  }
+
+  const { fields: f } = record;
   const assignValue = config.assign.field ? f[config.assign.field] : '';
   let targets = [];
   let card;
@@ -208,13 +236,13 @@ async function handleRecordCreate(recordId, fields) {
     card = buildTicketAssignCard(record, assignee);
   } else {
     console.log(`[工单事件] 「${config.assign.field}」值「${assignValue}」无法识别，跳过播报`);
-    return { broadcast: 0, sync: syncResult };
+    return { broadcast: 0, note: '未识别是否指定负责人' };
   }
 
   if (targets.length === 0) {
     console.log('[工单事件] 无可用播报目标，跳过播报');
-    pushHistory({ type: 'create', recordId, broadcast: 0, note: '无播报目标' });
-    return { broadcast: 0, sync: syncResult };
+    pushHistory({ type: scene, recordId, broadcast: 0, note: '无播报目标' });
+    return { broadcast: 0, note: '无播报目标' };
   }
 
   const results = [];
@@ -227,36 +255,37 @@ async function handleRecordCreate(recordId, fields) {
       results.push({ target: describeTarget(target), success: false, error: err.message });
     }
   }
-  pushHistory({ type: 'create', recordId, assignValue, targets: results });
 
-  console.log(`[工单事件] 创建播报完成: ${results.filter(r => r.success).length}/${results.length} 个群`);
-  return { broadcast: results.filter(r => r.success).length, sync: syncResult };
+  // 至少一个群播报成功才标记已播报，失败时允许下次重试
+  if (results.some((r) => r.success)) {
+    broadcastedRecords.add(recordId);
+  }
+  pushHistory({ type: scene, recordId, assignValue, targets: results });
+
+  console.log(`[工单事件] ${scene} 播报完成: ${results.filter((r) => r.success).length}/${results.length} 个群`);
+  return { broadcast: results.filter((r) => r.success).length };
 }
 
 /**
- * 处理工单更新事件：仅当申请状态变化时更新项目状态
+ * 处理工单更新事件：category 门控搬运 + 申请状态进入「审批中」时播报
  */
 async function handleRecordUpdate(recordId, fields, oldFields) {
   const record = await loadRecord(recordId, fields);
   console.log(`[工单事件] 工单更新: ${recordId}`);
 
-  // 1. category 有值时搬运到项目看板
-  await syncIfCategoryPresent(record, 'update');
+  // 1. category 有值时搬运到项目看板（同步映射字段，含 status）
+  const syncResult = await syncIfCategoryPresent(record, 'update');
 
-  // 2. 申请状态变化时更新项目状态
-  const oldStatus = oldFields?.['申请状态'];
-  const newStatus = record.fields['申请状态'];
-  if (oldStatus !== newStatus && newStatus) {
-    const projectStatus = syncService.mapStatus(newStatus);
-    try {
-      await syncService.updateProjectStatus(recordId, projectStatus);
-      console.log(`[工单事件] 申请状态变化: ${oldStatus} → ${newStatus}，项目状态更新为 ${projectStatus}`);
-    } catch (err) {
-      console.error(`[工单事件] 更新项目状态失败:`, err.message);
+  // 2. 申请状态为「审批中」时触发播报（去重保证只播一次）
+  if (config.broadcast.on.includes('create')) {
+    const statusField = config.broadcast.statusField;
+    const status = statusField ? record.fields[statusField] : '';
+    if (status === ACTIVATION_STATUS) {
+      await broadcastTicket(record, 'publish');
     }
   }
 
-  return { broadcast: 0 };
+  return { broadcast: 0, sync: syncResult };
 }
 
 /**
