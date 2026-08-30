@@ -51,6 +51,45 @@ function pushHistory(entry) {
   if (broadcastHistory.length > 50) broadcastHistory.length = 50;
 }
 
+// ============================================================
+// 播报标记（写回源表，跨重启防重播）
+// 背景：飞书长连接同一应用多条连接随机分发事件，机器人仅能收到
+// 约 1/N 的事件；漏掉的部分由每分钟轮询对账兜底，标记保证不重播。
+// ============================================================
+let markFieldReady = false;
+
+async function ensureMarkField() {
+  if (markFieldReady || !config.broadcast.markField) return;
+  try {
+    await bitableApi.createField(
+      config.bitable.sourceAppToken,
+      config.bitable.sourceTableId,
+      config.broadcast.markField
+    );
+    console.log(`[工单事件] 已在源表创建播报标记字段「${config.broadcast.markField}」`);
+  } catch (err) {
+    // 字段已存在等场景视作就绪；真正的写入失败会在 markBroadcast 日志暴露
+  }
+  markFieldReady = true;
+}
+
+async function markBroadcast(recordId, scene) {
+  const markField = config.broadcast.markField;
+  if (!markField) return;
+  await ensureMarkField();
+  try {
+    const stamp = `${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false })} ${scene}`;
+    await bitableApi.updateRecord(
+      config.bitable.sourceAppToken,
+      config.bitable.sourceTableId,
+      recordId,
+      { [markField]: stamp }
+    );
+  } catch (err) {
+    console.error(`[工单事件] 写入播报标记失败 ${recordId}:`, err.message);
+  }
+}
+
 function pruneExpired(map, ttl) {
   const now = Date.now();
   for (const [key, value] of map) {
@@ -210,6 +249,13 @@ async function broadcastTicket(record, scene) {
     return { broadcast: 0, note: '已播报过' };
   }
 
+  // 源表标记去重（事件触发时读到已标记记录则跳过；跨重启防重播）
+  const markField = config.broadcast.markField;
+  if (markField && record.fields[markField]) {
+    console.log(`[工单事件] 工单 ${recordId} 已有播报标记「${record.fields[markField]}」，跳过`);
+    return { broadcast: 0, note: '已播报过(标记)' };
+  }
+
   const { fields: f } = record;
   const assignValue = config.assign.field ? f[config.assign.field] : '';
   let targets = [];
@@ -265,6 +311,7 @@ async function broadcastTicket(record, scene) {
   // 至少一个群播报成功才标记已播报，失败时允许下次重试
   if (results.some((r) => r.success)) {
     broadcastedRecords.add(recordId);
+    await markBroadcast(recordId, scene);
   }
   pushHistory({ type: scene, recordId, assignValue, targets: results });
 
@@ -283,6 +330,54 @@ async function rebroadcastRecord(recordId) {
     return { broadcast: 0, note: `审批节点「${node || '(空)'}」不在触发范围` };
   }
   return broadcastTicket(record, 'rebroadcast');
+}
+
+/**
+ * 轮询对账：扫描源表所有处于触发节点的工单，漏播的补播、漏搬的补搬。
+ * 背景：飞书长连接同一应用多条连接随机分发事件，事件链路只是快速触发，
+ * 漏掉的部分由本函数（每分钟执行）兜底；「已播报」标记保证跨轮询/跨重启幂等。
+ */
+async function reconcileBroadcasts() {
+  const markField = config.broadcast.markField;
+  const nodeField = config.approvalNode.field;
+
+  const all = await bitableApi.listAllRecords(
+    config.bitable.sourceAppToken,
+    config.bitable.sourceTableId
+  );
+
+  let broadcast = 0;
+  let synced = 0;
+  let skipped = 0;
+
+  for (const record of all) {
+    const f = record.fields;
+    const node = nodeField ? f[nodeField] : '';
+    if (!isActivationNode(node)) continue; // 不在触发节点
+    if (markField && f[markField]) continue; // 已播报过
+
+    // 补搬运（category 门控）
+    try {
+      const syncResult = await syncIfCategoryPresent(record, 'reconcile');
+      if (syncResult) synced++;
+    } catch (err) {
+      console.error(`[对账] 补搬运失败 ${record.record_id}:`, err.message);
+    }
+
+    // 补播报（成功则内部写标记）
+    try {
+      const r = await broadcastTicket(record, 'reconcile');
+      if (r.broadcast > 0) broadcast++;
+      else skipped++;
+    } catch (err) {
+      console.error(`[对账] 补播失败 ${record.record_id}:`, err.message);
+      skipped++;
+    }
+  }
+
+  console.log(`[对账] 扫描 ${all.length} 条，补播 ${broadcast}，补搬运 ${synced}，跳过 ${skipped}`);
+  pushHistory({ type: 'reconcile', checked: all.length, broadcast, synced, skipped });
+  return { checked: all.length, broadcast, synced, skipped };
 }
 
 /**
@@ -475,6 +570,7 @@ module.exports = {
   handleRecordUpdate,
   handleAcceptOrder,
   rebroadcastRecord,
+  reconcileBroadcasts,
   getAllTickets,
   getPendingTickets,
   getTicketStats,

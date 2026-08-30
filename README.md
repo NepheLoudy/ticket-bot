@@ -12,6 +12,8 @@
 
 机器人订阅云文档事件 `drive.file.bitable_record_changed_v1`，并前置订阅多维表格。
 
+> **注意**：本应用与 approval-bot / knowledge-tracker 共用同一个飞书应用，长连接事件会被多条连接**随机分发**（每条事件只推给其中一条连接）。因此事件链路仅作「快速触发」，**每分钟轮询对账兜底**：扫描源表所有处于触发节点的工单，漏播的补播、漏搬的补搬。已播报工单会写入源表「已播报」字段（`BROADCAST_MARK_FIELD`），保证跨重启/跨轮询不重复播报。
+
 **触发条件**：工单「审批节点」字段进入以下任一节点时触发播报（等价于之前的「申请状态=审批中」）。创建与更新事件均支持，通过 `record_id` 去重保证只播一次。
 
 - `有组员接单后通过`：未指定负责人工单的审批节点；
@@ -167,6 +169,7 @@ npm start          # 生产模式
 | GET | `/api/bot/history` | 播报历史 |
 | GET | `/api/bot/cron-status` | 定时任务状态 |
 | POST | `/api/bot/rebroadcast` | 手动补播指定工单（body: `{recordId}`，幂等） |
+| POST | `/api/bot/reconcile` | 手动触发播报对账（漏播补播/漏搬补搬） |
 | POST | `/api/feishu/event` | 飞书事件 HTTP 回调（长连接未启用时） |
 
 ---

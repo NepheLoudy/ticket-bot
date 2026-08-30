@@ -465,6 +465,7 @@ async function runTimeoutCheck() {
 let summaryTask = null;
 let timeoutTask = null;
 let closeReminderTask = null;
+let reconcileTask = null;
 
 function startCronJobs() {
   // 每日汇总任务
@@ -521,9 +522,27 @@ function startCronJobs() {
   });
 
   console.log(`[定时任务] 结单提醒已启动，调度规则: ${TIMEOUT_CONFIG.checkInterval} (Asia/Shanghai)`);
+
+  // 播报对账任务（每分钟执行一次）
+  // 长连接事件会被共用应用的其他连接随机抢走，对账兜底保证漏播工单最终补播/补搬运
+  if (reconcileTask) {
+    console.log('[定时任务] 播报对账任务已存在，先停止旧任务');
+    reconcileTask.stop();
+  }
+
+  reconcileTask = cron.schedule('* * * * *', () => {
+    console.log('[定时任务] 触发播报对账');
+    ticketService.reconcileBroadcasts().catch(err => {
+      console.error('[定时任务] 播报对账失败:', err.message);
+    });
+  }, {
+    timezone: 'Asia/Shanghai',
+  });
+
+  console.log('[定时任务] 播报对账已启动，调度规则: 每分钟 (Asia/Shanghai)');
   console.log(`[定时任务] 当前时间: ${new Date().toLocaleString('zh-CN')}`);
 
-  return { summaryTask, timeoutTask, closeReminderTask };
+  return { summaryTask, timeoutTask, closeReminderTask, reconcileTask };
 }
 
 function stopCronJobs() {
@@ -542,6 +561,11 @@ function stopCronJobs() {
     closeReminderTask = null;
     console.log('[定时任务] 结单提醒已停止');
   }
+  if (reconcileTask) {
+    reconcileTask.stop();
+    reconcileTask = null;
+    console.log('[定时任务] 播报对账已停止');
+  }
 }
 
 function getCronStatus() {
@@ -559,6 +583,11 @@ function getCronStatus() {
       running: !!closeReminderTask,
       schedule: TIMEOUT_CONFIG.checkInterval,
       config: `提前 ${config.closeReminder.leadDays} 天提醒结单`,
+    },
+    reconcile: {
+      running: !!reconcileTask,
+      schedule: '* * * * *',
+      config: '每分钟扫描触发节点工单，漏播补播/漏搬补搬',
     },
   };
 }

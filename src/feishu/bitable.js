@@ -114,9 +114,35 @@ async function updateRecord(appToken, tableId, recordId, fields) {
   return { record_id: res.data.record.record_id, fields: res.data.record.fields };
 }
 
+/**
+ * 创建表格字段（多行文本）
+ * @param {string} appToken 多维表格 app_token
+ * @param {string} tableId 表 ID
+ * @param {string} fieldName 字段名
+ * @param {number} [type] 字段类型，默认 1（文本）
+ */
+async function createField(appToken, tableId, fieldName, type = 1) {
+  if (!appToken || !tableId || !fieldName) {
+    throw new Error('未配置多维表格 appToken/tableId 或字段名');
+  }
+
+  const res = await requestAPI(
+    'POST',
+    `/bitable/v1/apps/${appToken}/tables/${tableId}/fields`,
+    { field_name: fieldName, type }
+  );
+
+  if (res.code !== 0) {
+    throw new Error(`创建字段失败: ${res.msg} (code: ${res.code})`);
+  }
+
+  return res.data?.field;
+}
+
 module.exports = {
   listAllRecords,
   getRecord,
   createRecord,
   updateRecord,
+  createField,
 };

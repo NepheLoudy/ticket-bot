@@ -135,6 +135,17 @@ app.post('/api/bot/rebroadcast', async (req, res) => {
   }
 });
 
+// 手动触发播报对账（扫描触发节点工单，漏播补播/漏搬补搬）
+app.post('/api/bot/reconcile', async (req, res) => {
+  try {
+    const result = await ticketService.reconcileBroadcasts();
+    res.json({ success: true, result });
+  } catch (err) {
+    console.error('对账失败:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ---------- 飞书事件 HTTP 回调（长连接未启用时使用） ----------
 
 app.post('/api/feishu/event', async (req, res) => {

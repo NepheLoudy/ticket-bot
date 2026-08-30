@@ -137,6 +137,8 @@ const config = {
     displayFields: parseListConfig(process.env.DISPLAY_FIELDS),
     watchedFields: parseListConfig(process.env.WATCHED_FIELDS),
     on: parseListConfig(process.env.BROADCAST_ON || 'create'),
+    // 播报标记字段（写回源表，跨重启防重播；长连接事件被共用应用的其他连接抢走时由轮询对账兜底）
+    markField: process.env.BROADCAST_MARK_FIELD === '' ? '' : (process.env.BROADCAST_MARK_FIELD || '已播报'),
   },
 
   // 「是否指定人员负责」分支
