@@ -116,9 +116,14 @@ async function buildTargetFields(sourceFields, sourceRecordId, parentRecordId, a
     Object.assign(targetFields, buildPersonFieldsByGroups(groups, assignee.id));
   }
 
-  // 9. name（工单标题，用于识别）
-  const title = sourceFields['申请编号'] || sourceFields['需求'] || sourceFields['需求1'] || `工单-${sourceRecordId.slice(-6)}`;
-  targetFields['name'] = typeof title === 'string' ? title : (title.text || title.link || `工单-${sourceRecordId.slice(-6)}`);
+  // 9. name：支持项目统一命名「（category支持项目）」；category 为空时回退申请编号/需求
+  const category = sourceFields['category'];
+  if (category) {
+    targetFields['name'] = `（${category}支持项目）`;
+  } else {
+    const title = sourceFields['申请编号'] || sourceFields['需求'] || sourceFields['需求1'] || `工单-${sourceRecordId.slice(-6)}`;
+    targetFields['name'] = typeof title === 'string' ? title : (title.text || title.link || `工单-${sourceRecordId.slice(-6)}`);
+  }
 
   return targetFields;
 }
