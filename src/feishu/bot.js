@@ -144,6 +144,7 @@ function buildTicketFieldLines(fields, exclude = []) {
 /**
  * 未指定负责人：面向组别的群聊里发布「询问是否有人接单」的公布消息
  * 包含接单确认提醒：@机器人确认接单
+ * 配色/图标与「指定负责人」链路统一（蓝色 📬 新工单提醒），仅保留接单指引差异
  */
 function buildTicketOpenCard(record) {
   const { record_id, fields } = record;
@@ -152,9 +153,9 @@ function buildTicketOpenCard(record) {
   const elements = [
     { tag: 'markdown', content: `**${title}**` },
     { tag: 'hr' },
+    { tag: 'markdown', content: '📬 有新工单发布，请组内同学尽快响应' },
     ...buildTicketFieldLines(fields, [config.broadcast.titleField]),
     { tag: 'hr' },
-    { tag: 'markdown', content: '🙋 此工单暂未指定负责人，**有兴趣接单的同学请在群内响应**' },
     { tag: 'markdown', content: `💡 **接单方式**：在群内发送消息 **@${config.bot.name}** 确认接单` },
     { tag: 'note', elements: [{ tag: 'plain_text', content: '机器人会自动更新项目状态为"进行中"' }] },
   ];
@@ -163,8 +164,8 @@ function buildTicketOpenCard(record) {
     config: { wide_screen_mode: true, enable_forward: true },
     elements,
     header: {
-      template: 'orange',
-      title: { content: '🆕 新工单待接单', tag: 'plain_text' },
+      template: 'blue',
+      title: { content: '📬 新工单提醒', tag: 'plain_text' },
     },
   };
 }
