@@ -1,12 +1,13 @@
 const config = require('../config');
 const bitableApi = require('../feishu/bitable');
 const { normalizeForWrite, toDateOnlyTimestamp } = require('../utils/fields');
+const { resolvePersonGroups, buildPersonFieldsByGroups } = require('../utils/personFields');
 
 /**
  * 同步服务：将工单记录搬运到项目看板
  * - category 有值时触发
  * - name 字段值作为父项目名称，在项目看板中查找匹配记录作为 parentId
- * - 指定负责人按组别填到对应人员字段
+ * - 指定负责人按其所属组别填到对应人员字段（机械→owner，电控/硬件→dkyjcontributers，视觉→sjcontributers，宣运→xycontributers）
  */
 
 // ============================================================
@@ -25,56 +26,6 @@ const STATUS_MAPPING = {
 function mapStatus(applyStatus) {
   if (!applyStatus) return 'pending';
   return STATUS_MAPPING[applyStatus] || 'pending';
-}
-
-// ============================================================
-// 组别 → 项目看板人员字段映射
-// ============================================================
-const GROUP_TO_PERSON_FIELD = {
-  '机械组': 'owner',
-  '电控组': 'dkyjcontributers',
-  '硬件组': 'dkyjcontributers',
-  '视觉组': 'sjcontributers',
-  '宣运组': 'xycontributers',
-  '管理层': 'owner', // 管理层默认归到 owner
-};
-
-/**
- * 根据组别和指定负责人，构造项目看板的人员字段
- * @param {Array<string>} groups 组别数组（面向组别）
- * @param {{id: string, name: string}|null} assignee 指定负责人
- * @returns {object} 人员字段对象 { owner: [...], dkyjcontributers: [...], ... }
- */
-function buildPersonFields(groups, assignee) {
-  const personFields = {
-    owner: [],
-    dkyjcontributers: [],
-    sjcontributers: [],
-    xycontributers: [],
-  };
-
-  if (!assignee || !assignee.id) {
-    return personFields;
-  }
-
-  // 指定负责人按组别填到对应字段
-  const assigneeGroups = groups && groups.length > 0 ? groups : ['机械组']; // 默认归到机械组
-  const assignedFields = new Set();
-
-  for (const group of assigneeGroups) {
-    const fieldName = GROUP_TO_PERSON_FIELD[group];
-    if (fieldName && !assignedFields.has(fieldName)) {
-      personFields[fieldName] = [{ id: assignee.id }];
-      assignedFields.add(fieldName);
-    }
-  }
-
-  // 如果没有匹配到任何字段，默认放到 owner
-  if (assignedFields.size === 0) {
-    personFields.owner = [{ id: assignee.id }];
-  }
-
-  return personFields;
 }
 
 /**
@@ -120,9 +71,10 @@ function hasCategory(fields) {
  * @param {object} sourceFields 工单字段
  * @param {string} sourceRecordId 工单 record_id
  * @param {string|null} parentRecordId 父项目 record_id
+ * @param {string[]|null} assigneeGroups 指定负责人所属组别（已解析，空则不填人员字段）
  * @returns {object} 项目看板字段
  */
-function buildTargetFields(sourceFields, sourceRecordId, parentRecordId) {
+async function buildTargetFields(sourceFields, sourceRecordId, parentRecordId, assigneeGroups = null) {
   const targetFields = {};
 
   // 1. 源记录ID（查重依据）
@@ -155,11 +107,14 @@ function buildTargetFields(sourceFields, sourceRecordId, parentRecordId) {
     targetFields['parentId'] = [parentRecordId];
   }
 
-  // 8. 人员字段（指定负责人按组别填）
-  const groups = sourceFields['面向组别'];
+  // 8. 人员字段（指定负责人按其所属组别填）
   const assignee = sourceFields['指定负责人']?.[0] || null;
-  const personFields = buildPersonFields(groups, assignee);
-  Object.assign(targetFields, personFields);
+  if (assignee?.id) {
+    const groups = assigneeGroups && assigneeGroups.length > 0
+      ? assigneeGroups
+      : (sourceFields['面向组别'] || []).map(String);
+    Object.assign(targetFields, buildPersonFieldsByGroups(groups, assignee.id));
+  }
 
   // 9. name（工单标题，用于识别）
   const title = sourceFields['申请编号'] || sourceFields['需求'] || sourceFields['需求1'] || `工单-${sourceRecordId.slice(-6)}`;
@@ -214,8 +169,13 @@ async function syncRecord(sourceRecord) {
   const parentName = fields['name'];
   const parentRecordId = await findParentProject(parentName);
 
-  // 2. 构造目标字段
-  const targetFields = buildTargetFields(fields, record_id, parentRecordId);
+  // 2. 指定负责人按其所属组别解析（USER_GROUPS → 通讯录 → 面向组别兜底）
+  const assignee = fields['指定负责人']?.[0] || null;
+  const routeGroups = config.broadcast.routeField ? fields[config.broadcast.routeField] : null;
+  const assigneeGroups = assignee ? await resolvePersonGroups(routeGroups, assignee) : null;
+
+  // 3. 构造目标字段
+  const targetFields = await buildTargetFields(fields, record_id, parentRecordId, assigneeGroups);
 
   // 3. 查重 upsert
   const existing = await findTargetRecordByKey(record_id);
@@ -308,5 +268,4 @@ module.exports = {
   syncAll,
   updateProjectStatus,
   mapStatus,
-  buildPersonFields,
 };

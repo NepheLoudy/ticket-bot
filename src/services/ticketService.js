@@ -8,6 +8,7 @@ const {
   buildTicketAssignCard,
 } = require('../feishu/bot');
 const { formatFieldValue, formatFieldText } = require('../utils/fields');
+const { resolvePersonGroups, buildPersonFieldsByGroups } = require('../utils/personFields');
 
 // ============================================================
 // 工单事件处理：
@@ -39,12 +40,6 @@ function isActivationNode(node) {
 // 待接单工单映射：chat_id → [{ recordId, sourceRecordId, title }]
 // 用于接单确认时查找对应工单
 const pendingOrdersByChat = new Map();
-
-// ============================================================
-// 人员所属组别查询（带缓存）
-// ============================================================
-const userDeptCache = new Map();
-const deptNameCache = new Map();
 
 function pushHistory(entry) {
   broadcastHistory.unshift({ time: new Date().toISOString(), ...entry });
@@ -137,72 +132,11 @@ function collectTargets(routeValue) {
 }
 
 /**
- * 通过飞书通讯录查询人员的部门名称
- */
-async function getUserGroupsFromContact(openId) {
-  if (!openId) return [];
-  if (userDeptCache.has(openId)) return userDeptCache.get(openId);
-
-  try {
-    const { requestAPI } = require('../feishu/client');
-    const u = await requestAPI(
-      'GET',
-      `/contact/v3/users/${openId}?user_id_type=open_id&department_id_type=department_id`
-    );
-    if (u.code !== 0) throw new Error(`${u.msg} (code: ${u.code})`);
-
-    const deptIds = u.data?.user?.department_ids || [];
-    const groupNames = [];
-    for (const deptId of deptIds) {
-      let deptName = deptNameCache.get(deptId);
-      if (deptName === undefined) {
-        const d = await requestAPI('GET', `/contact/v3/departments/${deptId}?department_id_type=department_id`);
-        if (d.code !== 0) throw new Error(`${d.msg} (code: ${d.code})`);
-        deptName = d.data?.department?.name || '';
-        deptNameCache.set(deptId, deptName);
-      }
-      if (deptName) groupNames.push(deptName);
-    }
-
-    userDeptCache.set(openId, groupNames);
-    return groupNames;
-  } catch (err) {
-    console.warn(`[工单事件] 通过通讯录查询人员组别失败: ${err.message}`);
-    userDeptCache.set(openId, []);
-    return [];
-  }
-}
-
-/**
- * 查询指定负责人所属组别
+ * 查询指定负责人所属组别（USER_GROUPS → 通讯录 → 面向组别兜底，见 utils/personFields）
  */
 async function resolveAssigneeGroups(record, assignee) {
-  const groups = [];
-
-  // 1. USER_GROUPS 手动映射
-  if (assignee) {
-    for (const key of [assignee.id, assignee.name]) {
-      if (key && config.assign.userGroups.has(key)) {
-        groups.push(config.assign.userGroups.get(key));
-        break;
-      }
-    }
-  }
-
-  // 2. 飞书通讯录部门
-  if (groups.length === 0 && assignee?.id) {
-    const contactGroups = await getUserGroupsFromContact(assignee.id);
-    groups.push(...contactGroups);
-  }
-
-  // 3. 兜底：工单的「面向组别」
-  if (groups.length === 0 && config.broadcast.routeField) {
-    const routeValue = record.fields[config.broadcast.routeField];
-    if (Array.isArray(routeValue)) groups.push(...routeValue.map(String));
-    else if (routeValue) groups.push(String(routeValue));
-  }
-
-  return groups;
+  const routeGroups = config.broadcast.routeField ? record.fields[config.broadcast.routeField] : null;
+  return resolvePersonGroups(routeGroups, assignee);
 }
 
 /**
@@ -479,6 +413,33 @@ async function handleAcceptOrder(chatId, userId, userName, message) {
       } catch (supplementErr) {
         console.error(`[接单确认] 写入补充负责人失败:`, supplementErr.message);
       }
+    }
+
+    // 2.6 按接单人所属组别写入看板人员字段（机械→owner，电控/硬件→dkyjcontributers，
+    //     视觉→sjcontributers，宣运→xycontributers；组别解析：USER_GROUPS → 通讯录 → 工单面向组别兜底）
+    try {
+      const srcRecord = await bitableApi.getRecord(
+        config.bitable.sourceAppToken,
+        config.bitable.sourceTableId,
+        sourceRecordId
+      );
+      const routeGroups = config.broadcast.routeField ? srcRecord.fields[config.broadcast.routeField] : null;
+      const groups = await resolvePersonGroups(routeGroups, { id: userId, name: userName });
+      const personFields = buildPersonFieldsByGroups(groups, userId);
+      const target = await syncService.findTargetRecordByKey(sourceRecordId);
+      if (target) {
+        await bitableApi.updateRecord(
+          config.bitable.targetAppToken,
+          config.bitable.targetTableId,
+          target.record_id,
+          personFields
+        );
+        console.log(`[接单确认] 已按组别（${groups.join('/') || '(未识别，默认owner)'}）写入看板人员字段: ${userName}`);
+      } else {
+        console.warn(`[接单确认] 看板无对应记录，跳过人员字段写入: ${sourceRecordId}`);
+      }
+    } catch (personErr) {
+      console.error(`[接单确认] 写入看板人员字段失败:`, personErr.message);
     }
 
     // 3. 从待接单列表中移除
