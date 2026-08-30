@@ -391,11 +391,7 @@ async function handleAcceptOrder(chatId, userId, userName, message) {
   console.log(`[接单确认] 匹配到工单: ${title} (${recordId})`);
 
   try {
-    // 1. 更新项目状态为 waiting（接单确认）
-    await syncService.updateProjectStatus(sourceRecordId, 'waiting');
-    console.log(`[接单确认] 项目状态更新为 waiting`);
-
-    // 2. 更新项目状态为 in_progress（开始执行）
+    // 1. 更新项目状态为 in_progress（搬运时已是 waiting，确认接单才开始执行）
     await syncService.updateProjectStatus(sourceRecordId, 'in_progress');
     console.log(`[接单确认] 项目状态更新为 in_progress`);
 

@@ -12,9 +12,12 @@ const { resolvePersonGroups, buildPersonFieldsByGroups } = require('../utils/per
 
 // ============================================================
 // 状态映射：工单申请状态 → 项目看板 status
+// 已通过=发起人已结单 → completed；已拒绝/撤回等 → died
+// 审批中按审批节点推进：
+//   - 触发节点（有组员接单后通过/负责人确认消息后通过）→ waiting（等待接单/等待负责人确认）
+//   - 回执单节点（负责人已确认接单）→ in_progress
 // ============================================================
 const STATUS_MAPPING = {
-  '审批中': 'in_progress',
   '已通过': 'completed',
   '已删除': 'died',
   '已拒绝': 'died',
@@ -23,9 +26,29 @@ const STATUS_MAPPING = {
   '已撤回': 'died',
 };
 
-function mapStatus(applyStatus) {
+function statusRank(s) {
+  return { pending: 0, waiting: 1, in_progress: 2, completed: 3, died: 4 }[s] ?? 0;
+}
+
+/**
+ * status 只向前推进，防止对账 upsert 把业务事件（接单确认→in_progress）重置回 waiting
+ * completed/died 为终态直接覆盖
+ */
+function shouldOverrideStatus(current, target) {
+  if (target === 'completed' || target === 'died') return true;
+  return statusRank(target) >= statusRank(current);
+}
+
+function mapStatus(applyStatus, approvalNode) {
   if (!applyStatus) return 'pending';
-  return STATUS_MAPPING[applyStatus] || 'pending';
+  if (STATUS_MAPPING[applyStatus]) return STATUS_MAPPING[applyStatus];
+
+  // 审批中：按审批节点推进
+  if (approvalNode) {
+    if (approvalNode === config.approvalNode.closeValue) return 'in_progress';
+    if (config.approvalNode.acceptValues.includes(approvalNode)) return 'waiting';
+  }
+  return 'pending';
 }
 
 /**
@@ -98,9 +121,10 @@ async function buildTargetFields(sourceFields, sourceRecordId, parentRecordId, a
   // 5. priority 默认 low
   targetFields['priority'] = 'low';
 
-  // 6. status（根据申请状态映射）
+  // 6. status（申请状态 + 审批节点推进：已通过→completed，等待接单/确认→waiting，回执单→in_progress）
   const applyStatus = sourceFields['申请状态'];
-  targetFields['status'] = mapStatus(applyStatus);
+  const approvalNode = config.approvalNode.field ? sourceFields[config.approvalNode.field] : '';
+  targetFields['status'] = mapStatus(applyStatus, approvalNode);
 
   // 7. parentId（父项目关联）
   if (parentRecordId) {
@@ -182,9 +206,16 @@ async function syncRecord(sourceRecord) {
   // 3. 构造目标字段
   const targetFields = await buildTargetFields(fields, record_id, parentRecordId, assigneeGroups);
 
-  // 3. 查重 upsert
+  // 3. 查重 upsert（status 只向前推进，防止把业务事件状态重置回 waiting）
   const existing = await findTargetRecordByKey(record_id);
   if (existing) {
+    const currentStatus = existing.fields['status'];
+    const targetStatus = targetFields['status'];
+    if (currentStatus && targetStatus && !shouldOverrideStatus(currentStatus, targetStatus)) {
+      console.log(`[同步服务] status 防倒退: ${record_id} 保持 ${currentStatus}（目标 ${targetStatus}）`);
+      delete targetFields['status'];
+    }
+
     await bitableApi.updateRecord(
       config.bitable.targetAppToken,
       config.bitable.targetTableId,
@@ -273,4 +304,5 @@ module.exports = {
   syncAll,
   updateProjectStatus,
   mapStatus,
+  shouldOverrideStatus,
 };

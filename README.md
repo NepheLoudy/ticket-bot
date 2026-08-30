@@ -68,11 +68,11 @@
 | `理想结单时间` | `ddl` | 去掉时分秒，仅保留日期 |
 | `需求` / `需求1` | `fileToken` | 文本 |
 | - | `priority` | 默认 `low` |
-| `申请状态` | `status` | 审批中→in_progress，已通过→completed，已删除/已拒绝/已取消/已终止/已撤回→died，空/其他→pending |
-| `name` | `parentId` | `name` 字段值作为父项目名称，在项目看板中匹配记录作为父项目 |
-| `申请编号` | `name` | 子项目标题 |
-| `指定负责人` | 人员字段 | 按组别映射（见下表） |
-| - | `源记录ID` | 查重依据（upsert） |
+| `申请状态` + `审批节点` | `status` | 已通过→completed；已拒绝/已撤回等→died；审批中按节点推进：触发节点（等待接单/等待负责人确认）→waiting，回执单节点（负责人已确认接单）→in_progress |
+| `name` | `parentId` | `name` 字段值作为父项目名称，在项目看板中查找匹配记录作为 parentId |
+| `category` | `name` | 支持项目统一命名 `（{category}支持项目）` |
+| `指定负责人` | 人员字段 | 按负责人所属组别映射（见下表） |
+| - | `源记录ID` | 查重依据（upsert）；status 只向前推进，不会把接单后的 in_progress 重置回 waiting |
 
 **组别 → 人员字段映射**：
 
