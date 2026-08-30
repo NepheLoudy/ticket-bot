@@ -18,6 +18,7 @@ const path = require('path');
 
 const commitMessage = process.argv[2] || 'update: 代码更新';
 const TAR_NAME = 'ticket-bot-deploy.tar.gz';
+// 打包时用相对文件名 + cwd 指向临时目录，避免 Windows GNU tar 把 "C:" 当远程主机
 const TAR_LOCAL = path.join(os.tmpdir(), TAR_NAME);
 const TAR_REMOTE = '/tmp/' + TAR_NAME;
 
@@ -106,15 +107,16 @@ function deployCode() {
     // SFTP 方式：本地打包直传
     console.log('本地打包代码...');
     const pack = spawnSync('tar', [
-      '-czf', TAR_LOCAL,
+      '-czf', TAR_NAME,
       '--exclude=node_modules',
       '--exclude=.git',
       '--exclude=.env',
       '--exclude=logs',
       '--exclude=*.log',
       '--exclude=' + TAR_NAME,
+      '-C', __dirname,
       '.',
-    ], { stdio: 'inherit', cwd: __dirname });
+    ], { stdio: 'inherit', cwd: os.tmpdir() });
     if (pack.status !== 0) {
       console.error('打包失败');
       conn.end();

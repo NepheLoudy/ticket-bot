@@ -129,22 +129,24 @@ async function runSummaryWithRetry() {
 /**
  * 超时检查：查找超过 6 小时未接单的工单
  * 条件：
- *   - 审批节点 = 有组员接单后通过
+ *   - 审批节点处于任一触发节点（有组员接单后通过 / 负责人确认消息后通过）
  *   - 当前处理人 有值
  *   - 距离发起时间超过 6 小时
  */
 async function checkTimeoutTickets() {
   console.log('[超时检查] 开始检查超时工单...');
 
-  // 查询所有审批节点为「有组员接单后通过」的工单
-  const filter = `CurrentValue.[${config.approvalNode.field}] = "${config.approvalNode.acceptValue}"`;
+  // 查询审批节点处于任一触发节点的工单（未指定负责人/指定负责人两种审批流）
+  const filter = `OR(${config.approvalNode.acceptValues
+    .map((v) => `CurrentValue.[${config.approvalNode.field}] = "${v}"`)
+    .join(', ')})`;
   const records = await bitableApi.listAllRecords(
     config.bitable.sourceAppToken,
     config.bitable.sourceTableId,
     filter
   );
 
-  console.log(`[超时检查] 找到 ${records.length} 条「${config.approvalNode.acceptValue}」的工单`);
+  console.log(`[超时检查] 找到 ${records.length} 条处于触发节点（${config.approvalNode.acceptValues.join('，')}）的工单`);
 
   const now = Date.now();
   const timeoutMs = TIMEOUT_CONFIG.hours * 60 * 60 * 1000;

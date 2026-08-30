@@ -27,8 +27,14 @@ const broadcastHistory = [];
 // 已播报的工单 recordId（跨创建/发布事件去重，避免同一工单重复播报）
 const broadcastedRecords = new Set();
 
-// 播报触发节点：审批节点等于该值时触发播报（等价于之前「申请状态=审批中」）
-const ACTIVATION_NODE_VALUE = config.approvalNode.acceptValue;
+// 播报触发节点：审批节点命中任一值时触发播报
+//   - 有组员接单后通过：未指定负责人工单的审批节点
+//   - 负责人确认消息后通过：指定负责人工单的审批节点
+const ACTIVATION_NODE_VALUES = new Set(config.approvalNode.acceptValues);
+
+function isActivationNode(node) {
+  return node !== null && node !== undefined && node !== '' && ACTIVATION_NODE_VALUES.has(String(node));
+}
 
 // 待接单工单映射：chat_id → [{ recordId, sourceRecordId, title }]
 // 用于接单确认时查找对应工单
@@ -177,15 +183,15 @@ async function handleRecordCreate(recordId, fields) {
   // 1. category 有值时搬运到项目看板
   const syncResult = await syncIfCategoryPresent(record, 'create');
 
-  // 2. 审批节点为「有组员接单后通过」时播报
+  // 2. 审批节点进入触发值时播报（新建时已处于触发节点也直接播报）
   let broadcastResult = { broadcast: 0 };
   if (config.broadcast.on.includes('create')) {
     const nodeField = config.approvalNode.field;
     const node = nodeField ? record.fields[nodeField] : '';
-    if (node === ACTIVATION_NODE_VALUE) {
+    if (isActivationNode(node)) {
       broadcastResult = await broadcastTicket(record, 'create');
     } else {
-      console.log(`[工单事件] 创建时审批节点为「${node}」，暂不播报（等待进入「${ACTIVATION_NODE_VALUE}」）`);
+      console.log(`[工单事件] 创建时审批节点为「${node}」，暂不播报（等待进入「${[...ACTIVATION_NODE_VALUES].join('」/「')}」）`);
     }
   }
 
@@ -267,6 +273,19 @@ async function broadcastTicket(record, scene) {
 }
 
 /**
+ * 手动补播指定工单（用于漏播修复，走同一去重集合保证幂等）
+ * @param {string} recordId 源表记录 ID
+ */
+async function rebroadcastRecord(recordId) {
+  const record = await loadRecord(recordId);
+  const node = config.approvalNode.field ? record.fields[config.approvalNode.field] : '';
+  if (!isActivationNode(node)) {
+    return { broadcast: 0, note: `审批节点「${node || '(空)'}」不在触发范围` };
+  }
+  return broadcastTicket(record, 'rebroadcast');
+}
+
+/**
  * 处理工单更新事件：category 门控搬运 + 申请状态进入「审批中」时播报
  */
 async function handleRecordUpdate(recordId, fields, oldFields) {
@@ -276,11 +295,11 @@ async function handleRecordUpdate(recordId, fields, oldFields) {
   // 1. category 有值时搬运到项目看板（同步映射字段，含 status）
   const syncResult = await syncIfCategoryPresent(record, 'update');
 
-  // 2. 审批节点为「有组员接单后通过」时触发播报（去重保证只播一次）
+  // 2. 审批节点进入触发值时触发播报（去重保证只播一次）
   if (config.broadcast.on.includes('create')) {
     const nodeField = config.approvalNode.field;
     const node = nodeField ? record.fields[nodeField] : '';
-    if (node === ACTIVATION_NODE_VALUE) {
+    if (isActivationNode(node)) {
       await broadcastTicket(record, 'publish');
     }
   }
@@ -455,6 +474,7 @@ module.exports = {
   handleRecordCreate,
   handleRecordUpdate,
   handleAcceptOrder,
+  rebroadcastRecord,
   getAllTickets,
   getPendingTickets,
   getTicketStats,

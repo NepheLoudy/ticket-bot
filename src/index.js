@@ -120,6 +120,21 @@ app.get('/api/bot/cron-status', (req, res) => {
   res.json(getCronStatus());
 });
 
+// 手动补播指定工单（漏播修复，走去重集合保证幂等）
+app.post('/api/bot/rebroadcast', async (req, res) => {
+  try {
+    const recordId = req.body?.recordId;
+    if (!recordId) {
+      return res.status(400).json({ error: '缺少 recordId' });
+    }
+    const result = await ticketService.rebroadcastRecord(recordId);
+    res.json({ success: true, result });
+  } catch (err) {
+    console.error('补播失败:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ---------- 飞书事件 HTTP 回调（长连接未启用时使用） ----------
 
 app.post('/api/feishu/event', async (req, res) => {
