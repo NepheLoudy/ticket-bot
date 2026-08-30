@@ -93,7 +93,7 @@
   关键字段：`申请编号`（超链接）、`申请状态`、`审批节点`、`面向组别`（多选）、`是否指定人员负责`、`指定负责人`（人员）、`补充负责人`（人员）、`category`、`name`（父项目名称）、`需求`/`需求1`、`发起人`、`发起人部门`、`当前处理人`、`理想结单时间`、`相关说明`（超链接）。
 
 - **目标表**：`tblIcyn9814CsgaH`「tbl_project」项目看板
-  需包含字段：`name`、`category`、`ddl`、`fileToken`、`priority`、`status`、`parentId`（单向关联）、`owner`、`dkyjcontributers`、`sjcontributers`、`xycontributers`、`源记录ID`。
+  需包含字段：`name`、`category`、`ddl`、`fileToken`、`priority`、`status`、`parentId`（单向关联）、`owner`、`dkyjcontributers`、`sjcontributers`、`xycontributers`。`源记录ID`（查重字段）缺失时会自动创建。
 
 ---
 
