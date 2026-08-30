@@ -354,9 +354,8 @@ async function reconcileBroadcasts() {
     const f = record.fields;
     const node = nodeField ? f[nodeField] : '';
     if (!isActivationNode(node)) continue; // 不在触发节点
-    if (markField && f[markField]) continue; // 已播报过
 
-    // 补搬运（category 门控）
+    // 补搬运（category 门控，与播报标记无关，upsert 幂等）
     try {
       const syncResult = await syncIfCategoryPresent(record, 'reconcile');
       if (syncResult) synced++;
@@ -365,6 +364,7 @@ async function reconcileBroadcasts() {
     }
 
     // 补播报（成功则内部写标记）
+    if (markField && f[markField]) continue; // 已播报过
     try {
       const r = await broadcastTicket(record, 'reconcile');
       if (r.broadcast > 0) broadcast++;

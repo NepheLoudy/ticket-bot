@@ -182,11 +182,32 @@ async function findTargetRecordByKey(sourceRecordId) {
 }
 
 /**
+ * 确保目标表存在「源记录ID」查重字段（缺失时创建，仅尝试一次）
+ */
+let keyFieldReady = false;
+async function ensureKeyField() {
+  if (keyFieldReady) return;
+  try {
+    await bitableApi.createField(
+      config.bitable.targetAppToken,
+      config.bitable.targetTableId,
+      config.sync.syncKeyField
+    );
+    console.log(`[同步服务] 已在目标表创建查重字段「${config.sync.syncKeyField}」`);
+  } catch (err) {
+    // 字段已存在或创建失败：不阻断后续同步（已存在时 upsert 依赖的字段可用）
+  }
+  keyFieldReady = true;
+}
+
+/**
  * 同步单条工单记录到项目看板
  * @param {{record_id: string, fields: object}} sourceRecord
  * @returns {Promise<{action: 'created'|'updated', targetRecordId: string, parentRecordId: string|null}>}
  */
 async function syncRecord(sourceRecord) {
+  await ensureKeyField();
+
   const { record_id, fields } = sourceRecord;
 
   // 1. 查找父项目（name 字段值）
