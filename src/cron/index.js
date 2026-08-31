@@ -11,6 +11,7 @@ const {
   buildCloseReminderCard,
 } = require('../feishu/bot');
 const { formatFieldValue, formatFieldText } = require('../utils/fields');
+const { getTicketApprovalUrl } = require('../feishu/bot');
 
 const broadcastHistory = [];
 
@@ -213,7 +214,7 @@ async function handleTimeoutTicket(ticketInfo) {
         currentHandler.id,
         `📋 您的工单「${title}」已超时 ${elapsedHours} 小时未结单\n\n` +
         `请前往审批界面完成结单：\n` +
-        `https://cquqianli.feishu.cn/base/${config.bitable.sourceAppToken}?table=${config.bitable.sourceTableId}&view=viewsAll&viewId=viewsAll&record=${recordId}\n\n` +
+        `${getTicketApprovalUrl(record.fields, recordId)}\n\n` +
         `如有疑问请联系管理员。`
       );
 
@@ -245,7 +246,7 @@ async function handleTimeoutTicket(ticketInfo) {
         currentHandler.id,
         `📋 您负责的工单「${title}」已超时 ${elapsedHours} 小时未结单\n\n` +
         `请尽快处理并前往审批界面完成结单：\n` +
-        `https://cquqianli.feishu.cn/base/${config.bitable.sourceAppToken}?table=${config.bitable.sourceTableId}&view=viewsAll&viewId=viewsAll&record=${recordId}\n\n` +
+        `${getTicketApprovalUrl(record.fields, recordId)}\n\n` +
         `如有疑问请联系发起人或管理员。`
       );
 
@@ -348,7 +349,7 @@ async function handleClosingTicket(ticketInfo) {
   const { record, handler, groups } = ticketInfo;
   const recordId = record.record_id;
   const title = formatFieldText(record.fields['申请编号']) || formatFieldValue(record.fields['需求1'] ?? record.fields['需求']) || `工单-${recordId.slice(-6)}`;
-  const approvalUrl = `https://cquqianli.feishu.cn/base/${config.bitable.sourceAppToken}?table=${config.bitable.sourceTableId}&view=viewsAll&record=${recordId}`;
+  const approvalUrl = getTicketApprovalUrl(record.fields, recordId);
 
   const state = closingRemindState.get(recordId);
 
