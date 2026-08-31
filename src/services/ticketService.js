@@ -387,7 +387,7 @@ async function handleAcceptOrder(chatId, userId, userName, message) {
   const pendingList = pendingOrdersByChat.get(chatKey) || [];
 
   if (pendingList.length === 0) {
-    // 内存映射重启后清空：回退查询源表——触发节点 + 补充负责人为空 + 面向组别匹配该群的最新工单
+    // 内存映射重启后清空：回退查询源表——触发节点/回执单节点 + 补充负责人为空 + 面向组别匹配该群的最新工单
     const route = config.broadcast.routes.find((r) => r.chatId === chatId);
     const group = route?.value;
     if (group) {
@@ -397,11 +397,13 @@ async function handleAcceptOrder(chatId, userId, userName, message) {
           config.bitable.sourceTableId
         );
         const nodeField = config.approvalNode.field;
+        const closeValue = config.approvalNode.closeValue;
         const supplementField = config.assign.supplementField;
         const candidates = all
           .filter((r) => {
             const f = r.fields;
-            if (!isActivationNode(f[nodeField])) return false;
+            const node = nodeField ? f[nodeField] : '';
+            if (!isActivationNode(node) && node !== closeValue) return false;
             const sup = f[supplementField];
             if (sup && sup.length > 0) return false;
             const groups = f[config.broadcast.routeField];
