@@ -6,9 +6,7 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",
-    "deploy": "node deploy.js",
-    "deploy:check": "node deploy-local.js",
-    "deploy:config": "node deploy-config.js",
+    "deploy": "node push.js",
     "auto-deploy": "node auto-deploy.js",
     "push": "node push.js",
     "test": "echo \"Error: no test specified\" && exit 1"

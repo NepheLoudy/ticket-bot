@@ -16,6 +16,9 @@ const { Client } = require('ssh2');
 const os = require('os');
 const path = require('path');
 
+// NAS 连接配置从 .env 读取（NAS_HOST/NAS_PORT/NAS_USER/NAS_PASSWORD），脚本不存任何密钥
+require('dotenv').config({ path: path.join(__dirname, '.env') });
+
 const commitMessage = process.argv[2] || 'update: 代码更新';
 const TAR_NAME = 'ticket-bot-deploy.tar.gz';
 // 打包时用相对文件名 + cwd 指向临时目录，避免 Windows GNU tar 把 "C:" 当远程主机
@@ -23,11 +26,15 @@ const TAR_LOCAL = path.join(os.tmpdir(), TAR_NAME);
 const TAR_REMOTE = '/tmp/' + TAR_NAME;
 
 const nasConfig = {
-  host: '10.253.33.233',
-  port: 8500,
-  username: 'qianli',
-  password: 'cquqianli2026',
+  host: process.env.NAS_HOST,
+  port: Number(process.env.NAS_PORT || 22),
+  username: process.env.NAS_USER,
+  password: process.env.NAS_PASSWORD,
 };
+if (!nasConfig.host || !nasConfig.password) {
+  console.error('缺少 NAS 部署配置：请在 .env 中配置 NAS_HOST/NAS_PORT/NAS_USER/NAS_PASSWORD');
+  process.exit(1);
+}
 
 // ============ [1/4] 代码提交推送到 GitHub ============
 console.log('========== [1/4] 代码提交推送到 GitHub ==========');

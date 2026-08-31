@@ -165,6 +165,28 @@ app.post('/api/feishu/event', async (req, res) => {
     return;
   }
 
+  if (header?.event_type === 'drive.file.bitable_record_changed_v1') {
+    setImmediate(async () => {
+      try {
+        // V2 事件结构（长连接/网关转发同款）：event.action_list[] 内含 { action, record_id, after_value }
+        const actionList = event?.action_list || [];
+        for (const item of actionList) {
+          const actionType =
+            item.action === 'record_added' ? 'create' : item.action === 'record_edited' ? 'update' : null;
+          if (!actionType) continue;
+          await processBitableEvent({
+            table_id: event?.table_id,
+            record_id: item.record_id,
+            action_type: actionType,
+            fields: item.after_value || item.before_value || undefined,
+          });
+        }
+      } catch (err) {
+        console.error('处理飞书事件失败:', err);
+      }
+    });
+  }
+
   if (header?.event_type === 'bitable.record.create' || header?.event_type === 'bitable.record.update') {
     setImmediate(async () => {
       try {
