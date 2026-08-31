@@ -267,13 +267,16 @@ async function rebroadcastRecord(recordId) {
 }
 
 /**
- * 轮询对账：扫描源表所有处于触发节点的工单，漏播的补播、漏搬的补搬。
+ * 轮询对账：扫描源表所有处于触发节点/回执单节点的工单
+ *   - 触发节点：漏播的补播、漏搬的补搬（「已播报」标记防重复）
+ *   - 回执单节点：负责人已确认接单，推进看板状态（waiting → in_progress）
  * 背景：飞书长连接同一应用多条连接随机分发事件，事件链路只是快速触发，
- * 漏掉的部分由本函数（每分钟执行）兜底；「已播报」标记保证跨轮询/跨重启幂等。
+ * 漏掉的部分由本函数（每分钟执行）兜底。
  */
 async function reconcileBroadcasts() {
   const markField = config.broadcast.markField;
   const nodeField = config.approvalNode.field;
+  const closeValue = config.approvalNode.closeValue;
 
   const all = await bitableApi.listAllRecords(
     config.bitable.sourceAppToken,
@@ -287,9 +290,11 @@ async function reconcileBroadcasts() {
   for (const record of all) {
     const f = record.fields;
     const node = nodeField ? f[nodeField] : '';
-    if (!isActivationNode(node)) continue; // 不在触发节点
+    const inAcceptNode = isActivationNode(node); // 等待接单/等待负责人确认
+    const inCloseNode = node === closeValue; // 负责人已确认接单（回执单）
+    if (!inAcceptNode && !inCloseNode) continue;
 
-    // 补搬运（category 门控，与播报标记无关，upsert 幂等）
+    // 补搬运/状态推进（category 门控，与播报标记无关，upsert 幂等）
     try {
       const syncResult = await syncIfCategoryPresent(record, 'reconcile');
       if (syncResult) synced++;
@@ -297,8 +302,9 @@ async function reconcileBroadcasts() {
       console.error(`[对账] 补搬运失败 ${record.record_id}:`, err.message);
     }
 
-    // 补播报（成功则内部写标记）
-    if (markField && f[markField]) continue; // 已播报过
+    // 补播报（仅触发节点且未播报过；回执单节点不播报）
+    if (!inAcceptNode) continue;
+    if (markField && f[markField]) continue;
     try {
       const r = await broadcastTicket(record, 'reconcile');
       if (r.broadcast > 0) broadcast++;
@@ -379,6 +385,46 @@ async function handleAcceptOrder(chatId, userId, userName, message) {
   // 查找该群的待接单工单
   const chatKey = chatId;
   const pendingList = pendingOrdersByChat.get(chatKey) || [];
+
+  if (pendingList.length === 0) {
+    // 内存映射重启后清空：回退查询源表——触发节点 + 补充负责人为空 + 面向组别匹配该群的最新工单
+    const route = config.broadcast.routes.find((r) => r.chatId === chatId);
+    const group = route?.value;
+    if (group) {
+      try {
+        const all = await bitableApi.listAllRecords(
+          config.bitable.sourceAppToken,
+          config.bitable.sourceTableId
+        );
+        const nodeField = config.approvalNode.field;
+        const supplementField = config.assign.supplementField;
+        const candidates = all
+          .filter((r) => {
+            const f = r.fields;
+            if (!isActivationNode(f[nodeField])) return false;
+            const sup = f[supplementField];
+            if (sup && sup.length > 0) return false;
+            const groups = f[config.broadcast.routeField];
+            const groupList = Array.isArray(groups) ? groups.map(String) : groups ? [String(groups)] : [];
+            return groupList.includes(group);
+          })
+          .sort((a, b) => ((b.fields['发起时间'] || 0)) - ((a.fields['发起时间'] || 0)));
+        const latest = candidates[0];
+        if (latest) {
+          pendingList.push({
+            recordId: latest.record_id,
+            sourceRecordId: latest.record_id,
+            title: getTicketTitle(latest.fields, latest.record_id),
+            time: Date.now(),
+          });
+          console.log(`[接单确认] 内存映射为空，已回退匹配到工单: ${pendingList[0].title} (${pendingList[0].recordId})`);
+        }
+      } catch (err) {
+        console.error(`[接单确认] 回退查询待接单工单失败:`, err.message);
+      }
+    }
+  }
+
   if (pendingList.length === 0) {
     console.log(`[接单确认] 该群无待接单工单`);
     return { success: false, reason: '无待接单工单' };
