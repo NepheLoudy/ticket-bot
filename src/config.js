@@ -184,6 +184,9 @@ const config = {
     name: process.env.BOT_NAME || '工单机器人',
   },
 
+  // 忽略的群聊（其对话能力由其他项目机器人提供，如审批群归属 approval-bot）
+  ignoreChatIds: parseListConfig(process.env.IGNORE_CHAT_IDS),
+
   cron: {
     schedule: process.env.CRON_SCHEDULE || '',
   },

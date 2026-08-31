@@ -75,6 +75,12 @@ async function processChatMessage(data) {
   const userId = data?.sender?.sender_id?.open_id;
   const userName = data?.sender?.sender_id?.name || '';
 
+  // 忽略群（如审批群）不参与接单与指令处理，避免抢走其专属对话能力
+  if (chatId && config.ignoreChatIds.includes(chatId)) {
+    console.log(`[聊天服务] 跳过被忽略群的消息: ${chatId}`);
+    return;
+  }
+
   // 检测是否 @机器人（接单确认）
   if (isMentionBot(data)) {
     console.log(`[聊天服务] 检测到 @机器人: ${userName}(${userId}) 在群 ${chatId}`);

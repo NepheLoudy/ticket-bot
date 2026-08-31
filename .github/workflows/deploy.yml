@@ -73,6 +73,8 @@ jobs:
           FEISHU_ENCRYPT_KEY=
           BOT_NAME=工单机器人
           CRON_SCHEDULE=
+          # 忽略群（对话能力归其他项目机器人，如审批群归 approval-bot）
+          IGNORE_CHAT_IDS=oc_1ea53731a8772400450da6ab107f8331
           EOF
 
             pm2 delete ticket-bot 2>/dev/null || true
