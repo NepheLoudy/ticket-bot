@@ -311,7 +311,7 @@ function buildCloseReminderCard(record, handler) {
   const elements = [
     { tag: 'markdown', content: `**${title}**` },
     { tag: 'hr' },
-    { tag: 'markdown', content: `⏰ 工单临近理想结单时间，${at} **${handler?.name || ''}** 请尽快确认结单` },
+    { tag: 'markdown', content: `⏰ 工单已超过理想结单时间，${at} **${handler?.name || ''}** 请尽快确认结单` },
     ...buildTicketFieldLines(fields, [config.broadcast.titleField]),
     { tag: 'hr' },
     { tag: 'markdown', content: `👉 请前往 [审批界面](${approvalUrl}) 完成结单确认` },

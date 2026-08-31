@@ -302,14 +302,14 @@ async function handleTimeoutTicket(ticketInfo) {
 }
 
 // ============================================================
-// 结单提醒（审批节点=回执单：是否结单，临近理想结单时间）
+// 结单提醒（理想结单时间过后 N 天，应用机器人先私聊，未结单再转群引导）
 //   1. 先由机器人本人（应用机器人，非 webhook）私聊当前处理人
 //   2. 若下次检查仍未结单，则转对应群组引导到审批界面确认结单
 // ============================================================
 const closingRemindState = new Map(); // recordId -> { dmTime, groupNotified }
 
 async function checkClosingTickets() {
-  console.log('[结单提醒] 开始检查临近结单时间的工单...');
+  console.log('[结单提醒] 开始检查已过结单时间的工单...');
 
   const filter = `CurrentValue.[${config.approvalNode.field}] = "${config.approvalNode.closeValue}"`;
   const records = await bitableApi.listAllRecords(
@@ -335,13 +335,13 @@ async function checkClosingTickets() {
     const deadlineTs = new Date(deadline).getTime();
     if (isNaN(deadlineTs)) continue;
 
-    // 进入提醒窗口：now >= deadline - leadDays
-    if (now < deadlineTs - leadMs) continue;
+    // 进入提醒窗口：理想结单时间过后 N 天（CLOSE_REMINDER_LEAD_DAYS）才开始提醒
+    if (now < deadlineTs + leadMs) continue;
 
     dueRecords.push({ record, handler, groups: fields['面向组别'] || [], deadlineTs });
   }
 
-  console.log(`[结单提醒] 发现 ${dueRecords.length} 条临近结单的工单`);
+  console.log(`[结单提醒] 发现 ${dueRecords.length} 条已过结单时间的工单`);
   return dueRecords;
 }
 
@@ -359,7 +359,7 @@ async function handleClosingTicket(ticketInfo) {
     try {
       await sendTextToUser(
         handler.id,
-        `⏰ 工单「${title}」临近理想结单时间，请尽快完成结单\n\n` +
+        `⏰ 工单「${title}」已超过理想结单时间，请尽快完成结单\n\n` +
         `请前往审批界面确认结单：\n${approvalUrl}`
       );
       closingRemindState.set(recordId, { dmTime: Date.now(), groupNotified: false });
