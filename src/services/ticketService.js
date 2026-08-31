@@ -190,6 +190,23 @@ async function broadcastTicket(record, scene) {
     return { broadcast: 0, note: '已播报过(标记)' };
   }
 
+  // 发送前重查最新状态：已有人接单 / 审批节点已推进（如已到回执单）则不再播报「无人接单」
+  try {
+    const fresh = await loadRecord(recordId);
+    const freshNode = config.approvalNode.field ? fresh.fields[config.approvalNode.field] : '';
+    const supplement = fresh.fields[config.assign.supplementField];
+    if (supplement && supplement.length > 0) {
+      console.log(`[工单事件] 工单 ${recordId} 已有补充负责人，跳过播报`);
+      return { broadcast: 0, note: '已有人接单' };
+    }
+    if (!isActivationNode(freshNode)) {
+      console.log(`[工单事件] 工单 ${recordId} 审批节点已推进为「${freshNode || '(空)'}」，跳过播报`);
+      return { broadcast: 0, note: '节点已推进' };
+    }
+  } catch (err) {
+    console.warn(`[工单事件] 播报前重查失败（继续按原记录播报）: ${err.message}`);
+  }
+
   const { fields: f } = record;
   const assignValue = config.assign.field ? f[config.assign.field] : '';
   let targets = [];
@@ -267,6 +284,93 @@ async function rebroadcastRecord(recordId) {
 }
 
 /**
+ * 拉取群聊里 @机器人 的用户消息（IM 消息列表 API）
+ * @param {string} chatId 群 chat_id
+ * @param {number} sinceSeconds 起始时间（10 位秒级时间戳）
+ * @returns {Promise<Array<{senderId, senderName, text}>>}
+ */
+async function listBotMentions(chatId, sinceSeconds) {
+  const { requestAPI } = require('../feishu/client');
+  const now = Math.floor(Date.now() / 1000);
+  const res = await requestAPI(
+    'GET',
+    `/im/v1/messages?container_id_type=chat&container_id=${chatId}&start_time=${sinceSeconds}&end_time=${now}&sort=ByCreateTimeAsc&page_size=50`
+  );
+  if (res.code !== 0) throw new Error(`拉取群消息失败: ${res.msg} (code: ${res.code})`);
+
+  const result = [];
+  for (const item of res.data?.items || []) {
+    if (item.msg_type !== 'text') continue;
+    if (item.sender?.sender_type !== 'user') continue; // 跳过应用自己发的
+    const mentions = item.mentions || [];
+    const botMention = mentions.find((m) => m.name === config.bot.name);
+    if (!botMention) continue;
+    let text = '';
+    try { text = String(JSON.parse(item.body?.content || '{}').text || ''); } catch (e) { /* ignore */ }
+    result.push({ senderId: item.sender.id, senderName: '', text: text.replace(/@_user_\d+/g, '').trim() });
+  }
+  return result;
+}
+
+/**
+ * 补录接单：对已播报、无人接单的工单，回扫对应群里的 @机器人 消息。
+ * 背景：@消息与表格事件同走长连接，共用应用的多条连接会随机抢走消息，
+ * 被抢走的接单 @ 不会触发事件——由每分钟对账回扫兜底补录。
+ */
+async function backfillAccepts() {
+  const markField = config.broadcast.markField;
+  const nodeField = config.approvalNode.field;
+  const supplementField = config.assign.supplementField;
+
+  const all = await bitableApi.listAllRecords(
+    config.bitable.sourceAppToken,
+    config.bitable.sourceTableId
+  );
+
+  const nowSec = Math.floor(Date.now() / 1000);
+
+  for (const record of all) {
+    const f = record.fields;
+    const node = nodeField ? f[nodeField] : '';
+    if (!isActivationNode(node) && node !== config.approvalNode.closeValue) continue; // 不在流程中
+    if (markField && !f[markField]) continue; // 未播报过（未播报的不需要补录 @）
+    const supplement = f[supplementField];
+    if (supplement && supplement.length > 0) continue; // 已有接单人
+
+    // 定位该工单面向组别对应的群
+    const routeGroups = config.broadcast.routeField ? f[config.broadcast.routeField] : null;
+    const targets = collectTargets(routeGroups).filter((t) => t.chatId);
+    if (targets.length === 0) continue;
+
+    // 回扫窗口：工单发起时间之后（秒级）
+    const createdSec = Math.floor((f['发起时间'] || 0) / 1000) || nowSec - 24 * 3600;
+
+    for (const target of targets) {
+      try {
+        const mentions = await listBotMentions(target.chatId, createdSec);
+        if (mentions.length === 0) continue;
+
+        // 取最早的 @机器人 消息发送者作为接单人
+        const first = mentions[0];
+        // 解析姓名（尽力而为）
+        let senderName = first.senderId;
+        try {
+          const { requestAPI } = require('../feishu/client');
+          const u = await requestAPI('GET', `/contact/v3/users/${first.senderId}?user_id_type=open_id`);
+          if (u.code === 0) senderName = u.data?.user?.name || senderName;
+        } catch (e) { /* ignore */ }
+
+        console.log(`[接单补录] 回扫发现 @机器人 消息，补录接单: ${senderName}(${first.senderId}) → ${record.record_id}`);
+        await handleAcceptOrder(target.chatId, first.senderId, senderName, first.text);
+        break; // 该工单已补录，不再扫其他群
+      } catch (err) {
+        console.error(`[接单补录] 回扫失败 ${record.record_id} (${describeTarget(target)}):`, err.message);
+      }
+    }
+  }
+}
+
+/**
  * 轮询对账：扫描源表所有处于触发节点/回执单节点的工单
  *   - 触发节点：漏播的补播、漏搬的补搬（「已播报」标记防重复）
  *   - 回执单节点：负责人已确认接单，推进看板状态（waiting → in_progress）
@@ -317,6 +421,14 @@ async function reconcileBroadcasts() {
 
   console.log(`[对账] 扫描 ${all.length} 条，补播 ${broadcast}，补搬运 ${synced}，跳过 ${skipped}`);
   pushHistory({ type: 'reconcile', checked: all.length, broadcast, synced, skipped });
+
+  // 回扫群 @消息补录被分流的接单（在状态对账后执行）
+  try {
+    await backfillAccepts();
+  } catch (err) {
+    console.error('[对账] 接单补录失败:', err.message);
+  }
+
   return { checked: all.length, broadcast, synced, skipped };
 }
 
