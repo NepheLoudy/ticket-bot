@@ -7,7 +7,6 @@
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",
     "deploy": "node push.js",
-    "auto-deploy": "node auto-deploy.js",
     "push": "node push.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
