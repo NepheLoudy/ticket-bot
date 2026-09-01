@@ -5,6 +5,7 @@ const { startEventSubscription, processBitableEvent } = require('./feishu/eventS
 const { processChatMessage } = require('./services/chatService');
 const ticketService = require('./services/ticketService');
 const syncService = require('./services/syncService');
+const unclosedService = require('./services/unclosedService');
 const { startCronJobs, runSummary, getCronStatus, getSummaryHistory } = require('./cron');
 
 const app = express();
@@ -23,6 +24,17 @@ app.get('/api/health', (req, res) => {
 });
 
 // ---------- 工单查询 ----------
+
+// 未结单工单按「负责人所属组别」分桶（键为群 chatId），供 pm-robot DDL 播报分组分栏
+app.get('/api/tickets/unclosed-by-group', async (req, res) => {
+  try {
+    const result = await unclosedService.getUnclosedByGroup();
+    res.json({ result });
+  } catch (err) {
+    console.error('[API] 未结单工单分组查询失败:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
 
 app.get('/api/tickets', async (req, res) => {
   try {
