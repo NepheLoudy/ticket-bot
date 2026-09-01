@@ -71,8 +71,21 @@ const conn = new Client();
 
 conn.on('ready', () => {
   console.log('SSH 连接成功');
-  deployCode();
+  deployCode().catch((err) => { console.error('部署失败:', err.message); conn.end(); process.exit(1); });
 });
+
+// 执行命令并返回退出码（不中断流程，便于降级处理）
+function execCode(cmd) {
+  return new Promise((resolve) => {
+    console.log('>', cmd);
+    conn.exec(cmd, (err, stream) => {
+      if (err) { console.error('执行失败:', err.message); resolve(-1); return; }
+      stream.on('data', (d) => process.stdout.write(d.toString()));
+      stream.stderr.on('data', (d) => process.stderr.write(d.toString()));
+      stream.on('close', (code) => resolve(code));
+    });
+  });
+}
 
 conn.on('error', (err) => {
   console.error('SSH 连接失败:', err.message);
@@ -102,15 +115,18 @@ function exec(cmd, cb) {
 }
 
 // 部署代码（git 或 SFTP 两种方式）
-function deployCode() {
+async function deployCode() {
   if (gitPushed) {
     // git 方式：NAS 从 GitHub 拉取（SSH 协议）
     const cmd = 'cd /opt/ticket-bot && '
       + 'if [ ! -d .git ]; then git init; fi; '
       + 'git remote set-url origin git@github.com:NepheLoudy/ticket-bot.git 2>/dev/null || git remote add origin git@github.com:NepheLoudy/ticket-bot.git; '
       + 'git fetch origin main && git reset --hard origin/main';
-    exec(cmd, () => npmInstall());
-  } else {
+    const code = await execCode(cmd);
+    if (code === 0) return npmInstall();
+    console.log('⚠ NAS 拉取 GitHub 失败（NAS 网络不通），改用 SFTP 直传代码');
+  }
+  {
     // SFTP 方式：本地打包直传
     console.log('本地打包代码...');
     const pack = spawnSync('tar', [
