@@ -492,7 +492,17 @@ async function doSync(record, scene) {
  * @param {string} message 消息内容
  */
 async function handleAcceptOrder(chatId, userId, userName, message) {
-  console.log(`[接单确认] 收到消息: ${userName}(${userId}) 在群 ${chatId}: ${message}`);
+  // 事件体不携带发送者姓名，为空时通过通讯录解析（回执卡片与日志要用）
+  if (!userName && userId) {
+    try {
+      const { requestAPI } = require('../feishu/client');
+      const u = await requestAPI('GET', `/contact/v3/users/${userId}?user_id_type=open_id`);
+      if (u.code === 0) userName = u.data?.user?.name || '';
+    } catch (err) {
+      console.warn(`[接单确认] 通讯录解析姓名失败: ${err.message}`);
+    }
+  }
+  console.log(`[接单确认] 收到消息: ${userName || '(未知)'}(${userId}) 在群 ${chatId}: ${message}`);
 
   // 查找该群的待接单工单
   const chatKey = chatId;

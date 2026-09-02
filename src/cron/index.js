@@ -156,6 +156,10 @@ async function checkTimeoutTickets() {
   for (const record of records) {
     const fields = record.fields;
 
+    // 已有人接单（补充负责人非空）→ 不再超时重问询
+    const supplement = fields['补充负责人'];
+    if (supplement && supplement.length > 0) continue;
+
     // 检查当前处理人是否有值
     const currentHandler = fields['当前处理人']?.[0];
     if (!currentHandler || !currentHandler.id) {
