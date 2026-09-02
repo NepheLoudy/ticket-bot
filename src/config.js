@@ -174,6 +174,19 @@ const config = {
   // 组长映射（组别名:组长open_id或姓名）
   groupLeaders: parseGroupLeaders(process.env.GROUP_LEADERS),
 
+  // 财务周播报（发票/报销/转账跟进，纯定时播报，与审批事件无关）
+  finance: {
+    invoiceField: process.env.INVOICE_FIELD || '发票',
+    reimburseField: process.env.REIMBURSE_FIELD || '报销单',
+    transferField: process.env.TRANSFER_FIELD || '转账',
+    // 完成时间过后 N 个月才开始提醒没有转账
+    transferRemindMonths: Number(process.env.TRANSFER_REMIND_MONTHS || 3),
+    // 周播报目标群（GROUP_ROUTES 里的组别名）
+    routeValue: process.env.FINANCE_ROUTE_VALUE || '管理层',
+    // 周播报 cron（默认周五 18:00）
+    schedule: process.env.WEEKLY_BROADCAST_CRON || '0 0 18 * * 5',
+  },
+
   feishuEvent: {
     verificationToken: process.env.FEISHU_VERIFICATION_TOKEN || '',
     encryptKey: process.env.FEISHU_ENCRYPT_KEY || '',

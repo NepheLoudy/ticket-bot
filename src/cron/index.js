@@ -9,6 +9,7 @@ const {
   buildDailySummaryCard,
   buildReannounceCard,
   buildCloseReminderCard,
+  buildFinanceWeeklyCard,
 } = require('../feishu/bot');
 const { formatFieldValue, formatFieldText } = require('../utils/fields');
 const { getTicketApprovalUrl } = require('../feishu/bot');
@@ -58,7 +59,13 @@ function getSummaryTargets() {
 async function runSummary() {
   console.log('[每日汇总] 开始执行工单汇总播报...');
 
-  const { total, statusCount } = await ticketService.getTicketStats();
+  // 本周数据统计（只统计本周，不含全部历史数据）
+  const all = await ticketService.getAllTickets();
+  const ws = weekStartTs();
+  const stats = {
+    total: all.filter((r) => (r.fields['发起时间'] || 0) >= ws).length,
+    closed: all.filter((r) => r.fields['申请状态'] === '已通过' && (r.fields['完成时间'] || 0) >= ws).length,
+  };
   let pendingList = [];
   try {
     pendingList = await ticketService.getPendingTickets();
@@ -66,14 +73,14 @@ async function runSummary() {
     console.warn('[每日汇总] 获取待处理工单失败:', err.message);
   }
 
-  console.log(`[每日汇总] 统计: 总计=${total} 待处理=${pendingList.length}`);
+  console.log(`[每日汇总] 统计: 本周新增=${stats.total} 本周结单=${stats.closed} 待处理=${pendingList.length}`);
 
-  const card = buildDailySummaryCard({ total, statusCount }, pendingList);
+  const card = buildDailySummaryCard(stats, pendingList);
   const targets = getSummaryTargets();
 
   if (targets.length === 0) {
     console.log('[每日汇总] 未配置播报目标（GROUP_ROUTES/DEFAULT_CHAT_ID），跳过');
-    return { total, pendingCount: pendingList.length, sent: 0 };
+    return { ...stats, pendingCount: pendingList.length, sent: 0 };
   }
 
   const results = [];
@@ -87,7 +94,7 @@ async function runSummary() {
     }
   }
 
-  broadcastHistory.unshift({ time: new Date().toISOString(), type: 'daily_summary', total, pendingCount: pendingList.length, targets: results });
+  broadcastHistory.unshift({ time: new Date().toISOString(), type: "daily_summary", ...stats, pendingCount: pendingList.length, targets: results });
   if (broadcastHistory.length > 50) broadcastHistory.length = 50;
 
   console.log('[每日汇总] 汇总播报完成');
@@ -155,6 +162,10 @@ async function checkTimeoutTickets() {
 
   for (const record of records) {
     const fields = record.fields;
+
+    // 已有人接单（补充负责人非空）→ 不再超时重问询
+    const supplement = fields['补充负责人'];
+    if (supplement && supplement.length > 0) continue;
 
     // 检查当前处理人是否有值
     const currentHandler = fields['当前处理人']?.[0];
@@ -429,6 +440,120 @@ async function runCloseReminderCheck() {
 }
 
 /**
+ * 获取本周一 00:00（Asia/Shanghai）时间戳
+ */
+function weekStartTs() {
+  const now = new Date(Date.now() + 8 * 3600 * 1000); // UTC+8
+  const day = now.getUTCDay(); // 0=周日
+  const monday = new Date(now);
+  monday.setUTCDate(now.getUTCDate() - ((day + 6) % 7));
+  monday.setUTCHours(0, 0, 0, 0);
+  return monday.getTime() - 8 * 3600 * 1000;
+}
+
+/**
+ * 财务周播报：扫描审批已通过的工单，按发票/报销单/转账三档提醒财务
+ *   - 发票为空 → 催发票
+ *   - 有发票无报销单 → 提醒制单
+ *   - 有发票+报销单无转账，且完成时间超 N 个月 → 提醒转账
+ * 纯定时播报（周 cron），与审批提交/通过事件无关
+ */
+async function runFinanceWeeklyBroadcast() {
+  console.log('[财务周播报] 开始执行...');
+
+  const all = await ticketService.getAllTickets();
+  const approved = all.filter((r) => r.fields['申请状态'] === '已通过');
+
+  const fin = config.finance;
+  const now = Date.now();
+  const transferDelayMs = fin.transferRemindMonths * 30 * 24 * 3600 * 1000;
+
+  const noInvoice = [];
+  const noReimburse = [];
+  const noTransfer = [];
+
+  for (const r of approved) {
+    const f = r.fields;
+    const invoice = f[fin.invoiceField];
+    const reimburse = f[fin.reimburseField];
+    const transfer = f[fin.transferField];
+    const has = (v) => !(v === null || v === undefined || v === '');
+
+    const item = {
+      recordId: r.record_id,
+      编号: formatFieldText(f['申请编号']) || r.record_id.slice(-6),
+      组别: Array.isArray(f['面向组别']) ? f['面向组别'].join('/') : (f['面向组别'] || ''),
+      完成时间: f['完成时间'] ? new Date(f['完成时间']).toLocaleDateString('zh-CN') : '',
+    };
+
+    if (!has(invoice)) {
+      noInvoice.push(item);
+    } else if (!has(reimburse)) {
+      noReimburse.push(item);
+    } else if (!has(transfer)) {
+      const doneTs = f['完成时间'] ? new Date(f['完成时间']).getTime() : 0;
+      if (doneTs && now - doneTs >= transferDelayMs) noTransfer.push(item);
+    }
+  }
+
+  // 本周数据统计（放卡片最下面，只统计本周）
+  const ws = weekStartTs();
+  const weekly = approved.filter((r) => (r.fields['完成时间'] || 0) >= ws);
+  const weeklyCreated = all.filter((r) => (r.fields['发起时间'] || 0) >= ws);
+  const stats = { total: weeklyCreated.length, closed: weekly.length };
+
+  const card = buildFinanceWeeklyCard({ noInvoice, noReimburse, noTransfer }, stats);
+
+  const targets = ticketService.collectTargets(fin.routeValue);
+  if (targets.length === 0) {
+    console.log('[财务周播报] 无可用播报目标，跳过');
+    return { sent: 0 };
+  }
+
+  let sent = 0;
+  for (const target of targets) {
+    try {
+      await sendCardToTarget(target, card);
+      sent++;
+    } catch (err) {
+      console.error(`[财务周播报] 发送到 ${describeTarget(target)} 失败:`, err.message);
+    }
+  }
+
+  broadcastHistory.unshift({
+    time: new Date().toISOString(),
+    type: 'finance_weekly',
+    noInvoice: noInvoice.length,
+    noReimburse: noReimburse.length,
+    noTransfer: noTransfer.length,
+    sent,
+  });
+  if (broadcastHistory.length > 50) broadcastHistory.length = 50;
+
+  console.log(`[财务周播报] 完成: 催发票=${noInvoice.length} 待制单=${noReimburse.length} 待转账=${noTransfer.length}，发送 ${sent}/${targets.length} 群`);
+  return { sent, noInvoice: noInvoice.length, noReimburse: noReimburse.length, noTransfer: noTransfer.length };
+}
+
+async function runFinanceWeeklyWithRetry() {
+  let attempt = 0;
+  while (attempt < RETRY_CONFIG.maxAttempts) {
+    attempt++;
+    try {
+      return await runFinanceWeeklyBroadcast();
+    } catch (err) {
+      if (isFrequencyLimitError(err) && attempt < RETRY_CONFIG.maxAttempts) {
+        const delay = Math.min(RETRY_CONFIG.initialDelay * Math.pow(2, attempt - 1), RETRY_CONFIG.maxDelay);
+        console.warn(`[财务周播报] 第 ${attempt} 次失败，${delay / 1000} 秒后重试...`);
+        await sleep(delay);
+      } else {
+        console.error('[财务周播报] 执行失败:', err.message);
+        return null;
+      }
+    }
+  }
+}
+
+/**
  * 执行超时检查任务
  */
 async function runTimeoutCheck() {
@@ -467,6 +592,7 @@ let summaryTask = null;
 let timeoutTask = null;
 let closeReminderTask = null;
 let reconcileTask = null;
+let financeWeeklyTask = null;
 
 function startCronJobs() {
   // 每日汇总任务
@@ -541,9 +667,26 @@ function startCronJobs() {
   });
 
   console.log('[定时任务] 播报对账已启动，调度规则: 每分钟 (Asia/Shanghai)');
+
+  // 财务周播报任务（默认周五 18:00）
+  if (financeWeeklyTask) {
+    console.log('[定时任务] 财务周播报任务已存在，先停止旧任务');
+    financeWeeklyTask.stop();
+  }
+
+  financeWeeklyTask = cron.schedule(config.finance.schedule, () => {
+    console.log('[定时任务] 触发财务周播报');
+    runFinanceWeeklyWithRetry().catch(err => {
+      console.error('[定时任务] 财务周播报失败:', err.message);
+    });
+  }, {
+    timezone: 'Asia/Shanghai',
+  });
+
+  console.log(`[定时任务] 财务周播报已启动，调度规则: ${config.finance.schedule} (Asia/Shanghai)`);
   console.log(`[定时任务] 当前时间: ${new Date().toLocaleString('zh-CN')}`);
 
-  return { summaryTask, timeoutTask, closeReminderTask, reconcileTask };
+  return { summaryTask, timeoutTask, closeReminderTask, reconcileTask, financeWeeklyTask };
 }
 
 function stopCronJobs() {
@@ -566,6 +709,11 @@ function stopCronJobs() {
     reconcileTask.stop();
     reconcileTask = null;
     console.log('[定时任务] 播报对账已停止');
+  }
+  if (financeWeeklyTask) {
+    financeWeeklyTask.stop();
+    financeWeeklyTask = null;
+    console.log('[定时任务] 财务周播报已停止');
   }
 }
 
@@ -590,6 +738,11 @@ function getCronStatus() {
       schedule: '* * * * *',
       config: '每分钟扫描触发节点工单，漏播补播/漏搬补搬',
     },
+    financeWeekly: {
+      running: !!financeWeeklyTask,
+      schedule: config.finance.schedule,
+      config: `催发票/制单/转账提醒 → ${config.finance.routeValue}群`,
+    },
   };
 }
 
@@ -603,6 +756,7 @@ module.exports = {
   runSummary: runSummaryWithRetry,
   runTimeoutCheck,
   runCloseReminderCheck,
+  runFinanceWeeklyBroadcast,
   getCronStatus,
   getSummaryHistory,
   getSummaryTargets,

@@ -153,22 +153,11 @@ async function handleRecordCreate(recordId, fields) {
   const record = await loadRecord(recordId, fields);
   console.log(`[工单事件] 新建工单: ${recordId}`);
 
-  // 1. category 有值时搬运到项目看板
+  // category 有值时搬运到项目看板
+  // 播报不在事件里触发（审批提交/通过都不即时播）——统一由每分钟定时对账播报
   const syncResult = await syncIfCategoryPresent(record, 'create');
 
-  // 2. 审批节点进入触发值时播报（新建时已处于触发节点也直接播报）
-  let broadcastResult = { broadcast: 0 };
-  if (config.broadcast.on.includes('create')) {
-    const nodeField = config.approvalNode.field;
-    const node = nodeField ? record.fields[nodeField] : '';
-    if (isActivationNode(node)) {
-      broadcastResult = await broadcastTicket(record, 'create');
-    } else {
-      console.log(`[工单事件] 创建时审批节点为「${node}」，暂不播报（等待进入「${[...ACTIVATION_NODE_VALUES].join('」/「')}」）`);
-    }
-  }
-
-  return { ...broadcastResult, sync: syncResult };
+  return { broadcast: 0, sync: syncResult };
 }
 
 /**
@@ -439,17 +428,9 @@ async function handleRecordUpdate(recordId, fields, oldFields) {
   const record = await loadRecord(recordId, fields);
   console.log(`[工单事件] 工单更新: ${recordId}`);
 
-  // 1. category 有值时搬运到项目看板（同步映射字段，含 status）
+  // category 有值时搬运到项目看板（同步映射字段，含 status）
+  // 播报不在事件里触发（审批提交/通过都不即时播）——统一由每分钟定时对账播报
   const syncResult = await syncIfCategoryPresent(record, 'update');
-
-  // 2. 审批节点进入触发值时触发播报（去重保证只播一次）
-  if (config.broadcast.on.includes('create')) {
-    const nodeField = config.approvalNode.field;
-    const node = nodeField ? record.fields[nodeField] : '';
-    if (isActivationNode(node)) {
-      await broadcastTicket(record, 'publish');
-    }
-  }
 
   return { broadcast: 0, sync: syncResult };
 }
@@ -492,7 +473,17 @@ async function doSync(record, scene) {
  * @param {string} message 消息内容
  */
 async function handleAcceptOrder(chatId, userId, userName, message) {
-  console.log(`[接单确认] 收到消息: ${userName}(${userId}) 在群 ${chatId}: ${message}`);
+  // 事件体不携带发送者姓名，为空时通过通讯录解析（回执卡片与日志要用）
+  if (!userName && userId) {
+    try {
+      const { requestAPI } = require('../feishu/client');
+      const u = await requestAPI('GET', `/contact/v3/users/${userId}?user_id_type=open_id`);
+      if (u.code === 0) userName = u.data?.user?.name || '';
+    } catch (err) {
+      console.warn(`[接单确认] 通讯录解析姓名失败: ${err.message}`);
+    }
+  }
+  console.log(`[接单确认] 收到消息: ${userName || '(未知)'}(${userId}) 在群 ${chatId}: ${message}`);
 
   // 查找该群的待接单工单
   const chatKey = chatId;
