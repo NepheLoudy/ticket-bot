@@ -208,19 +208,29 @@ function buildTicketAssignCard(record, assignee) {
 }
 
 /**
- * 每日汇总卡片：数据统计只展示本周结果，放在卡片最下面
- * @param {object} stats { total: 本周新增, closed: 本周结单 }
+ * 每日汇总卡片
+ * @param {object} stats { total, statusCount: {状态: 数量} }
  * @param {Array} pendingList 待处理工单记录
  */
 function buildDailySummaryCard(stats, pendingList) {
   const date = new Date().toLocaleDateString('zh-CN');
 
+  const statusLines = Object.entries(stats.statusCount)
+    .map(([status, count]) => `- ${status || '(未填写)'}: ${count} 条`)
+    .join('\n');
+
   const elements = [
-    { tag: 'markdown', content: `**📋 工单播报**\n${date}` },
+    { tag: 'markdown', content: `**📊 工单每日汇总**\n${date}` },
     { tag: 'hr' },
+    { tag: 'markdown', content: `**工单总数**: ${stats.total} 条` },
   ];
 
+  if (statusLines) {
+    elements.push({ tag: 'markdown', content: `**状态分布**\n${statusLines}` });
+  }
+
   if (pendingList && pendingList.length > 0) {
+    elements.push({ tag: 'hr' });
     elements.push({
       tag: 'markdown',
       content: `**⏳ 待处理工单（${pendingList.length}条）**`,
@@ -230,13 +240,7 @@ function buildDailySummaryCard(stats, pendingList) {
       return `${index + 1}. ${title}`;
     });
     elements.push({ tag: 'markdown', content: lines.join('\n') });
-  } else {
-    elements.push({ tag: 'markdown', content: '✅ 暂无待处理工单' });
   }
-
-  // 本周数据统计（分栏最下面，只统计本周，不含全部历史数据）
-  elements.push({ tag: 'hr' });
-  elements.push({ tag: 'markdown', content: `📊 **本周数据统计**\n本周新增工单 ${stats.total || 0} 条 · 本周结单 ${stats.closed || 0} 条` });
 
   return {
     config: { wide_screen_mode: true, enable_forward: true },
@@ -294,47 +298,6 @@ function buildReannounceCard(record, elapsedHours, groupName) {
 }
 
 /**
- * 财务周播报卡片：催发票 / 待制单 / 待转账三栏 + 本周数据统计（放最下面，只统计本周）
- * @param {{noInvoice: Array, noReimburse: Array, noTransfer: Array}} lists 三档工单
- * @param {{total: number, closed: number}} stats 本周新增/本周结单
- */
-function buildFinanceWeeklyCard(lists, stats) {
-  const sections = [
-    { title: '🧾 未交发票（请催发票）', items: lists.noInvoice, color: '🔴' },
-    { title: '📄 已有发票待制单（请做报销单）', items: lists.noReimburse, color: '🟠' },
-    { title: '💰 待转账（完成超3个月）', items: lists.noTransfer, color: '🟡' },
-  ];
-
-  const elements = [];
-  for (const sec of sections) {
-    elements.push({ tag: 'markdown', content: `**${sec.title}** 共 ${sec.items.length} 条` });
-    if (sec.items.length === 0) {
-      elements.push({ tag: 'markdown', content: `${sec.color} 无` });
-    } else {
-      const lines = sec.items.slice(0, 15).map((it) =>
-        `- ${it.编号}${it.组别 ? ` [${it.组别}]` : ''}${it.完成时间 ? ` (完成 ${it.完成时间})` : ''}`
-      );
-      if (sec.items.length > 15) lines.push(`- ... 共 ${sec.items.length} 条`);
-      elements.push({ tag: 'markdown', content: lines.join('\n') });
-    }
-    elements.push({ tag: 'hr' });
-  }
-
-  // 本周数据统计（分栏最下面，只统计本周，不含全部历史数据）
-  const date = new Date().toLocaleDateString('zh-CN');
-  elements.push({ tag: 'markdown', content: `📊 **本周数据统计**（${date}）\n本周新增工单 ${stats.total} 条 · 本周结单 ${stats.closed} 条` });
-
-  return {
-    config: { wide_screen_mode: true, enable_forward: true },
-    elements,
-    header: {
-      template: 'purple',
-      title: { content: '💼 财务周提醒（发票/报销/转账）', tag: 'plain_text' },
-    },
-  };
-}
-
-/**
  * 结单提醒卡片（审批节点=回执单：是否结单，临近理想结单时间，引导到审批界面确认结单）
  * @param {object} record 工单记录
  * @param {{id: string, name: string}|null} handler 当前处理人
@@ -377,5 +340,4 @@ module.exports = {
   buildDailySummaryCard,
   buildReannounceCard,
   buildCloseReminderCard,
-  buildFinanceWeeklyCard,
 };
