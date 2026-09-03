@@ -166,7 +166,7 @@ function buildTicketOpenCard(record) {
     { tag: 'markdown', content: '📬 有新工单发布，请组内同学尽快响应' },
     ...buildTicketFieldLines(fields, [config.broadcast.titleField]),
     { tag: 'hr' },
-    { tag: 'markdown', content: `💡 **接单方式**：在群内发送消息 **@${config.bot.name}** 确认接单` },
+    { tag: 'markdown', content: `💡 **接单方式**：在群内发送消息 **@${config.broadcast.acceptBotName}** 确认接单` },
     { tag: 'note', elements: [{ tag: 'plain_text', content: '机器人会自动更新项目状态为"进行中"' }] },
   ];
 
@@ -274,7 +274,7 @@ function buildReannounceCard(record, elapsedHours, groupName) {
     ...buildTicketFieldLines(fields, [config.broadcast.titleField]),
     { tag: 'hr' },
     { tag: 'markdown', content: '🙋 **有兴趣接单的同学请在群内响应**' },
-    { tag: 'markdown', content: `💡 **接单方式**：在群内发送消息 **@${config.bot.name}** 确认接单` },
+    { tag: 'markdown', content: `💡 **接单方式**：在群内发送消息 **@${config.broadcast.acceptBotName}** 确认接单` },
   ];
 
   // @组长

@@ -34,36 +34,6 @@ function extractText(data) {
 }
 
 /**
- * 检测消息是否 @机器人
- */
-function isMentionBot(data) {
-  const message = data?.message || {};
-  const mentions = message.mentions || [];
-
-  // 检查 mentions 字段
-  for (const mention of mentions) {
-    if (mention?.id?.open_id === config.feishu.appId || mention?.key === 'all') {
-      return true;
-    }
-  }
-
-  // 检查消息内容中的 @_user_ 占位符
-  try {
-    const content = typeof message.content === 'string'
-      ? JSON.parse(message.content)
-      : message.content;
-    const text = content?.text || '';
-    if (/@_user_\d+/.test(text)) {
-      return true;
-    }
-  } catch (e) {
-    // ignore
-  }
-
-  return false;
-}
-
-/**
  * 处理收到的聊天消息事件（长连接 / HTTP 回调通用）
  */
 async function processChatMessage(data) {
@@ -81,16 +51,8 @@ async function processChatMessage(data) {
     return;
   }
 
-  // 检测是否 @机器人（接单确认）
-  if (isMentionBot(data)) {
-    console.log(`[聊天服务] 检测到 @机器人: ${userName}(${userId}) 在群 ${chatId}`);
-    const result = await ticketService.handleAcceptOrder(chatId, userId, userName, text);
-    if (result.success) {
-      // 接单确认成功，不再处理其他指令
-      return;
-    }
-    // 接单确认失败，继续处理其他逻辑
-  }
+  // 接单确认不走本事件路径：接单 @ 对象是群自定义机器人「爆米花机_自动型」（webhook，收不到事件），
+  // 由 ticketService 的每分钟消息回扫按 mention 结构匹配，这里只处理对话型机器人的指令。
 
   if (!text) return;
 

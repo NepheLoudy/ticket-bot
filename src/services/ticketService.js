@@ -303,7 +303,8 @@ async function listBotMentions(chatId, sinceSeconds) {
     if (item.msg_type !== 'text') continue;
     if (item.sender?.sender_type !== 'user') continue; // 跳过应用自己发的
     const mentions = item.mentions || [];
-    const botMention = mentions.find((m) => m.name === config.bot.name);
+    // 接单 @ 对象是群自定义机器人（webhook 播报者），按 mention 结构精确匹配，不做文本关键词检索
+    const botMention = mentions.find((m) => m.name === config.broadcast.acceptBotName);
     if (!botMention) continue;
     let text = '';
     try { text = String(JSON.parse(item.body?.content || '{}').text || ''); } catch (e) { /* ignore */ }
@@ -342,12 +343,14 @@ async function backfillAccepts() {
     const targets = collectTargets(routeGroups).filter((t) => t.chatId);
     if (targets.length === 0) continue;
 
-    // 回扫窗口：工单发起时间之后（秒级）
-    const createdSec = Math.floor((f['发起时间'] || 0) / 1000) || nowSec - 24 * 3600;
+    // 回扫窗口：工单发起时间之后（IM 消息列表 API page_size 上限 50，时间跨度过老的记录可能拉不全，
+    // 钳制最多回扫 7 天——接单 @ 一般发生在播报后短期内）
+    const createdSec = Math.floor((f['发起时间'] || 0) / 1000) || nowSec - 7 * 86400;
+    const startSec = Math.max(createdSec, nowSec - 7 * 86400);
 
     for (const target of targets) {
       try {
-        const mentions = await listBotMentions(target.chatId, createdSec);
+        const mentions = await listBotMentions(target.chatId, startSec);
         if (mentions.length === 0) continue;
 
         // 取最早的 @机器人 消息发送者作为接单人
