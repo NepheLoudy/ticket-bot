@@ -46,6 +46,11 @@ function extractLinkInfo(form) {
  * 处理 approval_task 事件：待审任务到达 → 按「审批人 == 配置的工单审批人」过滤并缓存
  */
 async function handleApprovalTaskEvent(event) {
+  // 未配置自动审批人时联动关闭：无法区分「群内有组员接单后通过」与
+  // 「负责人确认消息后通过」等其它节点的任务（事件与实例详情都不带节点名，
+  // 审批人身份是唯一可靠判据），误通过其它节点会打乱审批流
+  if (!config.approval.autoApproverId) return;
+
   const evt = event.event && event.event.instance_id ? event.event : event;
   const instanceId = evt.instance_id;
   const taskId = evt.task_id;
