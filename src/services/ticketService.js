@@ -513,9 +513,13 @@ async function handleAcceptOrder(chatId, userId, userName, message) {
 
   if (pendingList.length === 0) {
     // 内存映射重启后清空：回退查询源表——触发节点/回执单节点 + 补充负责人为空 + 面向组别匹配该群的最新工单
-    const route = config.broadcast.routes.find((r) => r.chatId === chatId);
-    const group = route?.value;
-    if (group) {
+    // 注意一个群可承载多个组别（如电控/硬件共群），必须收集该 chatId 对应的全部组别，
+    // 只取第一个会导致第二组别的工单匹配不到、接单误判"无待接单工单"
+    const groupsOfChat = config.broadcast.routes
+      .filter((r) => r.chatId === chatId)
+      .map((r) => r.value)
+      .filter(Boolean);
+    if (groupsOfChat.length > 0) {
       try {
         const all = await bitableApi.listAllRecords(
           config.bitable.sourceAppToken,
@@ -533,7 +537,7 @@ async function handleAcceptOrder(chatId, userId, userName, message) {
             if (sup && sup.length > 0) return false;
             const groups = f[config.broadcast.routeField];
             const groupList = Array.isArray(groups) ? groups.map(String) : groups ? [String(groups)] : [];
-            return groupList.includes(group);
+            return groupList.some((g) => groupsOfChat.includes(g));
           })
           .sort((a, b) => ((b.fields['发起时间'] || 0)) - ((a.fields['发起时间'] || 0)));
         const latest = candidates[0];
@@ -586,6 +590,7 @@ async function handleAcceptOrder(chatId, userId, userName, message) {
 
     // 2.6 按接单人所属组别写入看板人员字段（机械→owner，电控/硬件→dkyjcontributers，
     //     视觉→sjcontributers，宣运→xycontributers；组别解析：USER_GROUPS → 通讯录 → 工单面向组别兜底）
+    //     与看板已有人员合并（同字段多人并存），不清空其它组别
     try {
       const srcRecord = await bitableApi.getRecord(
         config.bitable.sourceAppToken,
@@ -597,11 +602,13 @@ async function handleAcceptOrder(chatId, userId, userName, message) {
       const personFields = buildPersonFieldsByGroups(groups, userId);
       const target = await syncService.findTargetRecordByKey(sourceRecordId);
       if (target) {
+        const { mergePersonFields } = require('../utils/personFields');
+        const merged = mergePersonFields(target.fields, personFields);
         await bitableApi.updateRecord(
           config.bitable.targetAppToken,
           config.bitable.targetTableId,
           target.record_id,
-          personFields
+          merged
         );
         console.log(`[接单确认] 已按组别（${groups.join('/') || '(未识别，默认owner)'}）写入看板人员字段: ${userName}`);
       } else {
@@ -634,6 +641,20 @@ async function handleAcceptOrder(chatId, userId, userName, message) {
         },
       };
       await sendCardToTarget(target, confirmCard);
+    }
+
+    // 5. 审批联动：自动通过「群内有组员接单后通过」节点（尽力而为，不影响接单结果）
+    try {
+      const { autoApproveForTicket } = require('./approvalLinkService');
+      const approveResult = await autoApproveForTicket(
+        await bitableApi.getRecord(config.bitable.sourceAppToken, config.bitable.sourceTableId, sourceRecordId),
+        userName
+      );
+      if (approveResult.done) {
+        console.log('[接单确认] 审批联动: 已自动通过审批节点');
+      }
+    } catch (err) {
+      console.warn('[接单确认] 审批联动失败(不影响接单):', err.message);
     }
 
     pushHistory({ type: 'accept', recordId, userId, userName, title });

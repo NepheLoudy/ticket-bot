@@ -2,6 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const config = require('./config');
 const { startEventSubscription, processBitableEvent } = require('./feishu/eventSubscription');
+const { handleApprovalTaskEvent } = require('./services/approvalLinkService');
 const { processChatMessage } = require('./services/chatService');
 const ticketService = require('./services/ticketService');
 const syncService = require('./services/syncService');
@@ -11,7 +12,8 @@ const { startCronJobs, runSummary, getCronStatus, getSummaryHistory } = require(
 const app = express();
 
 app.use(cors());
-app.use(express.json());
+// 网关会转发完整事件体（表格事件含 before/after 全量字段，可能超 100kb），放宽 body 限制
+app.use(express.json({ limit: '2mb' }));
 
 app.get('/api/health', (req, res) => {
   res.json({
@@ -217,6 +219,17 @@ app.post('/api/feishu/event', async (req, res) => {
         }
       } catch (err) {
         console.error('处理飞书事件失败:', err);
+      }
+    });
+  }
+
+  // 工单审批任务事件（网关转发，秒级）：缓存待审任务，接单后自动通过
+  if (header?.event_type === 'approval_task') {
+    setImmediate(async () => {
+      try {
+        await handleApprovalTaskEvent(event || {});
+      } catch (err) {
+        console.error('处理审批任务事件失败:', err);
       }
     });
   }

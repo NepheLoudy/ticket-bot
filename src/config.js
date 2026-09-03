@@ -168,6 +168,15 @@ const config = {
     closeValue: process.env.APPROVAL_NODE_CLOSE_VALUE || '回执单：是否结单',
   },
 
+  // 工单审批联动（群内接单 → 自动通过「群内有组员接单后通过」审批节点）
+  approval: {
+    // 工单审批定义 code（审批管理后台可查）。留空 = 联动关闭
+    approvalCode: process.env.APPROVAL_CODE || '',
+    // 「群内有组员接单后通过」节点审批人 open_id（节点审批人可全部为同一人）。
+    // 机器人以该身份自动同意。留空 = 不过滤审批人（实例当前待审任务即联动对象）
+    autoApproverId: process.env.APPROVAL_AUTO_APPROVER_ID || '',
+  },
+
   // 结单提醒（临近理想结单时间时，应用机器人先私聊，未结单再转群引导）
   closeReminder: {
     deadlineField: process.env.DEADLINE_FIELD || '理想结单时间',

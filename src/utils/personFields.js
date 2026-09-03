@@ -92,17 +92,15 @@ async function resolvePersonGroups(routeGroups, person) {
 /**
  * 按组别构造看板人员字段（机械→owner，电控/硬件→dkyjcontributers，
  * 视觉→sjcontributers，宣运→xycontributers；未识别组别默认归 owner）
+ *
+ * 只返回命中的字段（不含空数组）——飞书 update 只提交携带的字段，
+ * 空数组会把其它组别的已有人员清空，接单/搬运共用时必须避免互踩。
  * @param {string[]} groups 人员所属组别
  * @param {string} personId 人员 open_id
- * @returns {object} 人员字段对象
+ * @returns {object} 人员字段对象（仅命中字段）
  */
 function buildPersonFieldsByGroups(groups, personId) {
-  const personFields = {
-    owner: [],
-    dkyjcontributers: [],
-    sjcontributers: [],
-    xycontributers: [],
-  };
+  const personFields = {};
 
   if (!personId) return personFields;
 
@@ -123,9 +121,33 @@ function buildPersonFieldsByGroups(groups, personId) {
   return personFields;
 }
 
+/**
+ * 合并看板已有人员字段与新增人员（同字段多人并存、按 id 去重，不清空已有组别）
+ * @param {object} existingFields 目标表当前记录 fields
+ * @param {object} newPersonFields buildPersonFieldsByGroups 的产物
+ * @returns {object} 合并后的人员字段（仅涉及字段）
+ */
+function mergePersonFields(existingFields, newPersonFields) {
+  const merged = {};
+  for (const [field, persons] of Object.entries(newPersonFields || {})) {
+    const existing = Array.isArray(existingFields?.[field]) ? existingFields[field] : [];
+    const seen = new Set(existing.map((p) => p?.id).filter(Boolean));
+    const list = [...existing];
+    for (const p of persons || []) {
+      if (p?.id && !seen.has(p.id)) {
+        list.push(p);
+        seen.add(p.id);
+      }
+    }
+    merged[field] = list;
+  }
+  return merged;
+}
+
 module.exports = {
   GROUP_TO_PERSON_FIELD,
   getUserGroupsFromContact,
   resolvePersonGroups,
   buildPersonFieldsByGroups,
+  mergePersonFields,
 };

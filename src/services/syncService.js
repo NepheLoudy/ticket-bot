@@ -1,7 +1,7 @@
 const config = require('../config');
 const bitableApi = require('../feishu/bitable');
 const { normalizeForWrite, toDateOnlyTimestamp } = require('../utils/fields');
-const { resolvePersonGroups, buildPersonFieldsByGroups } = require('../utils/personFields');
+const { resolvePersonGroups, buildPersonFieldsByGroups, mergePersonFields } = require('../utils/personFields');
 
 /**
  * 同步服务：将工单记录搬运到项目看板
@@ -198,15 +198,24 @@ async function syncRecord(sourceRecord) {
   const parentName = fields['name'];
   const parentRecordId = await findParentProject(parentName);
 
-  // 2. 指定负责人按其所属组别解析（USER_GROUPS → 通讯录 → 面向组别兜底）
+  // 2. 人员组别解析：指定负责人 + 补充负责人（接单人）都参与看板人员字段映射
+  //    （USER_GROUPS → 通讯录 → 面向组别兜底）
   const assignee = fields['指定负责人']?.[0] || null;
-  const routeGroups = config.broadcast.routeField ? fields[config.broadcast.routeField] : null;
+  const routeGroups = config.broadcast.routeField ? fields['面向组别'] || fields[config.broadcast.routeField] : null;
   const assigneeGroups = assignee ? await resolvePersonGroups(routeGroups, assignee) : null;
 
   // 3. 构造目标字段
   const targetFields = await buildTargetFields(fields, record_id, parentRecordId, assigneeGroups);
 
-  // 3. 查重 upsert（status 只向前推进，防止把业务事件状态重置回 waiting）
+  // 3.5 补充负责人（接单人）按其所属组别追加人员字段（与指定负责人并存，不清空已有）
+  const supplement = fields['补充负责人']?.[0] || null;
+  if (supplement?.id) {
+    const supplementGroups = await resolvePersonGroups(routeGroups, supplement);
+    Object.assign(targetFields, buildPersonFieldsByGroups(supplementGroups, supplement.id));
+  }
+
+  // 3. 查重 upsert（status 只向前推进，防止把业务事件状态重置回 waiting；
+  //     人员字段与看板已有值合并，避免对账把接单写入的人冲掉）
   const existing = await findTargetRecordByKey(record_id);
   if (existing) {
     const currentStatus = existing.fields['status'];
@@ -215,6 +224,16 @@ async function syncRecord(sourceRecord) {
       console.log(`[同步服务] status 防倒退: ${record_id} 保持 ${currentStatus}（目标 ${targetStatus}）`);
       delete targetFields['status'];
     }
+
+    // 人员字段合并已有（update 只提交携带字段，但同字段多人须保留先前写入的人）
+    const personFieldNames = ['owner', 'dkyjcontributers', 'sjcontributers', 'xycontributers'];
+    const personPatch = {};
+    for (const fname of personFieldNames) {
+      if (targetFields[fname]) {
+        personPatch[fname] = mergePersonFields(existing.fields, { [fname]: targetFields[fname] })[fname];
+      }
+    }
+    Object.assign(targetFields, personPatch);
 
     await bitableApi.updateRecord(
       config.bitable.targetAppToken,
