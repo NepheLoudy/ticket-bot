@@ -46,11 +46,6 @@ function extractLinkInfo(form) {
  * 处理 approval_task 事件：待审任务到达 → 按「审批人 == 配置的工单审批人」过滤并缓存
  */
 async function handleApprovalTaskEvent(event) {
-  // 未配置自动审批人时联动关闭：无法区分「群内有组员接单后通过」与
-  // 「负责人确认消息后通过」等其它节点的任务（事件与实例详情都不带节点名，
-  // 审批人身份是唯一可靠判据），误通过其它节点会打乱审批流
-  if (!config.approval.autoApproverId) return;
-
   const evt = event.event && event.event.instance_id ? event.event : event;
   const instanceId = evt.instance_id;
   const taskId = evt.task_id;
@@ -58,6 +53,24 @@ async function handleApprovalTaskEvent(event) {
 
   const configuredCode = config.approval.approvalCode;
   if (configuredCode && evt.approval_code && evt.approval_code !== configuredCode) return;
+
+  // 未配置自动审批人时联动关闭：无法区分「群内有组员接单后通过」与
+  // 「负责人确认消息后通过」等其它节点的任务（事件与实例详情都不带节点名，
+  // 审批人身份是唯一可靠判据），误通过其它节点会打乱审批流。
+  // 关闭状态下仍记录到达任务的审批人 open_id——首次部署时用它完成配置激活。
+  if (!config.approval.autoApproverId) {
+    try {
+      const inst = await getInstanceDetail(instanceId);
+      const t = (inst.task_list || []).find((x) => x.id === taskId || x.task_id === taskId);
+      console.log(
+        `[审批联动] 未激活（待配 APPROVAL_AUTO_APPROVER_ID）: 实例 ${instanceId} task ${taskId}` +
+        ` 审批人 open_id=${t ? (t.user_id || t.approver_id || '?') : '?'} 状态=${t ? t.status : '?'}`
+      );
+    } catch (err) {
+      console.warn('[审批联动] 未激活，记录事件失败:', err.message);
+    }
+    return;
+  }
 
   let instance;
   try {
