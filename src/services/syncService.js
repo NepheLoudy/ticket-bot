@@ -14,7 +14,7 @@ const { resolvePersonGroups, buildPersonFieldsByGroups } = require('../utils/per
 // 状态映射：工单申请状态 → 项目看板 status
 // 已通过=发起人已结单 → completed；已拒绝/撤回等 → died
 // 审批中按审批节点推进：
-//   - 触发节点（有组员接单后通过/负责人确认消息后通过）→ waiting（等待接单/等待负责人确认）
+//   - 触发节点（群内有组员接单后通过/负责人确认消息后通过）→ waiting（等待接单/等待负责人确认）
 //   - 回执单节点（负责人已确认接单）→ in_progress
 // ============================================================
 const STATUS_MAPPING = {

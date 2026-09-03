@@ -29,7 +29,7 @@ const broadcastHistory = [];
 const broadcastedRecords = new Set();
 
 // 播报触发节点：审批节点命中任一值时触发播报
-//   - 有组员接单后通过：未指定负责人工单的审批节点
+//   - 群内有组员接单后通过：未指定负责人工单的审批节点
 //   - 负责人确认消息后通过：指定负责人工单的审批节点
 const ACTIVATION_NODE_VALUES = new Set(config.approvalNode.acceptValues);
 

@@ -162,7 +162,7 @@ const config = {
     field: process.env.APPROVAL_NODE_FIELD || '审批节点',
     // 触发播报 / 6小时未接单判断的节点值（逗号分隔多个，支持不同审批流的节点名）
     acceptValues: parseListConfig(
-      process.env.APPROVAL_NODE_ACCEPT_VALUE || '有组员接单后通过,负责人确认消息后通过'
+      process.env.APPROVAL_NODE_ACCEPT_VALUE || '群内有组员接单后通过,有组员接单后通过,负责人确认消息后通过'
     ),
     // 触发结单提醒的节点值
     closeValue: process.env.APPROVAL_NODE_CLOSE_VALUE || '回执单：是否结单',
