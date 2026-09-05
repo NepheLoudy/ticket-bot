@@ -137,11 +137,8 @@ const config = {
     displayFields: parseListConfig(process.env.DISPLAY_FIELDS),
     watchedFields: parseListConfig(process.env.WATCHED_FIELDS),
     on: parseListConfig(process.env.BROADCAST_ON || 'create'),
-    // 播报标记字段（写回源表，跨重启防重播；长连接事件被共用应用的其他连接抢走时由轮询对账兜底）
+    // 播报标记字段（写回源表，跨重启防重播；网关不可用期间的事件由轮询对账兜底）
     markField: process.env.BROADCAST_MARK_FIELD === '' ? '' : (process.env.BROADCAST_MARK_FIELD || '已播报'),
-    // 接单 @ 对象：群自定义机器人（webhook 播报者）名称。webhook 收不到事件，
-    // 接单监听由每分钟回扫群消息（IM 消息列表 API）按 mention 结构匹配实现
-    acceptBotName: process.env.ACCEPT_BOT_NAME || '爆米花机_自动型',
   },
 
   // 「是否指定人员负责」分支
@@ -164,6 +161,8 @@ const config = {
     acceptValues: parseListConfig(
       process.env.APPROVAL_NODE_ACCEPT_VALUE || '群内有组员接单后通过,有组员接单后通过,负责人确认消息后通过'
     ),
+    // 指定负责人工单的触发节点（「公示即绑定」与对账补绑定只作用于该节点的工单）
+    assignAcceptValue: process.env.APPROVAL_NODE_ASSIGN_ACCEPT_VALUE || '负责人确认消息后通过',
     // 触发结单提醒的节点值
     closeValue: process.env.APPROVAL_NODE_CLOSE_VALUE || '回执单：是否结单',
   },

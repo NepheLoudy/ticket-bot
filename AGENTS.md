@@ -11,7 +11,7 @@
 与其它机器人/服务的交互契约（改接口前先对顶层文档）：
 - 五个机器人**共用同一个飞书应用**；长连接只属于 feishu-gateway，本项目事件一律 `FEISHU_USE_LONG_CONNECTION=false`，由网关转发到本项目的 `POST /api/feishu/event`；
 - 指令交互契约：`POST /api/chat/command`，入参 `{command, args}`，回 `{reply}`（回复由调用方——网关或 hub——代发）；
-- 群播报走群自定义机器人 webhook，对话回复走飞书 IM API；
+- 群播报走应用机器人（对话型）IM API 优先（`chat_id`），应用机器人发送失败时回退群自定义机器人 webhook；接单确认靠 @应用机器人+「接单」的网关消息事件（秒级，无轮询回扫）；
 - 部署一律项目内 `npm run push "说明"`（规则见 qianli-deploy skill 与顶层 AGENTS.md），NAS 凭证在 .env 的 NAS_*；
 - 通用坑：@识别要兼容 mentioned_type='bot'；多维表格字段值先过 fieldText 类工具再拼字符串；express.json 建议放宽到 2mb。
 

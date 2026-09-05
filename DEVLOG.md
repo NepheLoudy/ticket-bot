@@ -2,9 +2,19 @@
 
 版本隔离单位：一次 `npm run push`（= 一次 git 提交 + 一次部署）。v1~v42 于 2026-09-04 按提交历史回溯编号，此后每次 push 在文末追加新版本（规则见顶层 [AGENTS.md](../AGENTS.md)）。
 
-当前最新：**v46**（2026-09-05，随本提交落地）。
+当前最新：**v47**（2026-09-05，随本提交落地）。
 
 ## 阶段九 · 指定负责人链路闭环（2026-09-05）
+
+### v47 · 2026-09-05 · 随本提交落地 · feat
+**播报与接单回执回归对话型应用机器人（删除每分钟消息回扫）+ 指定负责人「公示即绑定」**
+- 用户裁定：每分钟回扫群消息太耗费算力；webhook 自定义机器人收不到事件是回扫存在的根源，卡片按钮回调是应用级配置（五机器人共用一个应用会互相干扰）——故播报与接单触发整体回归对话型（架构铁律钦定的工单域例外，v38 前的原路）。
+- `src/feishu/bot.js`：`sendCardToTarget` 改 chat_id 优先（应用机器人 IM API），失败回退 webhook；接单指引统一改「在群内 @爆米花机-对话型 并发送『接单』」。**要求应用机器人在各组别群内**。
+- `src/services/chatService.js`：重开事件驱动接单——网关路由（含「接单」且 @机器人 → ticket-bot）转来的事件中，群聊 + 二次校验 @本应用机器人（`isSelfMention`：app/self/bot+名称多信号）→ `handleAcceptOrder`；失败原因以文本回复到群。
+- `src/services/ticketService.js`：删除 `backfillAccepts`/`listBotMentions`（每分钟 IM 消息列表轮询下线）；新增 `bindAssignedTicket`「公示即绑定」——指定负责人工单播报成功后仅写补充负责人 + 按组别合并看板人员字段，**状态推进与审批自动通过仍由本人 @机器人 确认触发**（用户明确裁定）；对账循环增加绑定补偿（已播报未绑定的补绑定，计数 `bound`）；接单回退查询放行「已绑定未确认」（补充负责人==指定负责人）工单。
+- `src/config.js`：新增 `approvalNode.assignAcceptValue`（`APPROVAL_NODE_ASSIGN_ACCEPT_VALUE`，默认「负责人确认消息后通过」）；删除 `broadcast.acceptBotName`（`ACCEPT_BOT_NAME` 下线）。
+- 文档：README 播报/接单章节与架构备注、`.env.example`、AGENTS.md 交互契约行同步。
+- 注意：**应用机器人必须在组别群内**，否则该群卡片走 webhook 兜底且接单事件不可达（日志有回退告警）。
 
 ### v46 · 2026-09-05 · 随本提交落地 · fix
 **审批联动缓存缺失兜底落地：按申请编号反查实例列表定位待审任务（存量工单/重启后也能自动通过）**

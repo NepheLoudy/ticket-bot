@@ -82,14 +82,22 @@ async function sendTextToUser(openId, text) {
 
 /**
  * 按 target（{chatId, webhookUrl}）发送卡片
+ * 优先走应用机器人（对话型）IM API：接单确认依赖 @应用机器人 的消息事件，
+ * webhook 自定义机器人收不到事件，仅作应用机器人不在群时的兜底
  */
 async function sendCardToTarget(target, cardContent) {
   if (!target) throw new Error('未指定发送目标');
+  if (target.chatId) {
+    try {
+      return await sendCardToChat(target.chatId, cardContent);
+    } catch (err) {
+      if (!target.webhookUrl) throw err;
+      console.warn(`[消息发送] 应用机器人发送失败，回退群自定义机器人 webhook: ${err.message}`);
+      return sendCardToWebhook(target.webhookUrl, cardContent);
+    }
+  }
   if (target.webhookUrl) {
     return sendCardToWebhook(target.webhookUrl, cardContent);
-  }
-  if (target.chatId) {
-    return sendCardToChat(target.chatId, cardContent);
   }
   throw new Error('发送目标缺少 chatId/webhookUrl');
 }
@@ -153,8 +161,7 @@ function buildTicketFieldLines(fields, exclude = []) {
 
 /**
  * 未指定负责人：面向组别的群聊里发布「询问是否有人接单」的公布消息
- * 包含接单确认提醒：@机器人确认接单
- * 配色/图标与「指定负责人」链路统一（蓝色 📬 新工单提醒），仅保留接单指引差异
+ * 包含接单确认提醒：@应用机器人 发送「接单」（网关把该消息事件秒级转发到本服务）
  */
 function buildTicketOpenCard(record) {
   const { record_id, fields } = record;
@@ -166,7 +173,7 @@ function buildTicketOpenCard(record) {
     { tag: 'markdown', content: '📬 有新工单发布，请组内同学尽快响应' },
     ...buildTicketFieldLines(fields, [config.broadcast.titleField]),
     { tag: 'hr' },
-    { tag: 'markdown', content: `💡 **接单方式**：在群内发送消息 **@${config.broadcast.acceptBotName}** 确认接单` },
+    { tag: 'markdown', content: `💡 **接单方式**：在群内 **@${config.bot.name}** 并发送「接单」` },
     { tag: 'note', elements: [{ tag: 'plain_text', content: '机器人会自动更新项目状态为"进行中"' }] },
   ];
 
@@ -181,8 +188,8 @@ function buildTicketOpenCard(record) {
 }
 
 /**
- * 已指定负责人：在其所属组别的群聊中 @本人 公示工单，仅限本人 @机器人 确认接单
- * （确认后机器人自动通过「负责人确认消息后通过」审批节点并推进项目状态）
+ * 已指定负责人：在其所属组别的群聊中 @本人 公示工单（公示即绑定：系统直接写补充负责人
+ * 与看板人员字段），仅限本人 @机器人 发送「接单」完成确认（确认后推进状态并通过审批）
  * @param {object} record 源表记录
  * @param {{id: string, name: string}|null} assignee 指定负责人
  */
@@ -194,11 +201,11 @@ function buildTicketAssignCard(record, assignee) {
   const elements = [
     { tag: 'markdown', content: `**${title}**` },
     { tag: 'hr' },
-    { tag: 'markdown', content: `📬 ${at} **${assignee?.name || ''}** 有新工单发布，请及时跟进` },
+    { tag: 'markdown', content: `📬 ${at} **${assignee?.name || ''}** 有新工单发布，已为你自动绑定接单` },
     ...buildTicketFieldLines(fields, [config.broadcast.titleField]),
     { tag: 'hr' },
-    { tag: 'markdown', content: `💡 **接单方式**：请本人在群内发送消息 **@${config.broadcast.acceptBotName}** 确认接单` },
-    { tag: 'note', elements: [{ tag: 'plain_text', content: '确认后机器人会自动通过审批并更新项目状态为"进行中"' }] },
+    { tag: 'markdown', content: `💡 **确认方式**：请本人在群内 **@${config.bot.name}** 并发送「接单」` },
+    { tag: 'note', elements: [{ tag: 'plain_text', content: '确认后机器人会自动更新项目状态为"进行中"并推进审批' }] },
   ];
 
   return {
@@ -278,7 +285,7 @@ function buildReannounceCard(record, elapsedHours, groupName) {
     ...buildTicketFieldLines(fields, [config.broadcast.titleField]),
     { tag: 'hr' },
     { tag: 'markdown', content: '🙋 **有兴趣接单的同学请在群内响应**' },
-    { tag: 'markdown', content: `💡 **接单方式**：在群内发送消息 **@${config.broadcast.acceptBotName}** 确认接单` },
+    { tag: 'markdown', content: `💡 **接单方式**：在群内 **@${config.bot.name}** 并发送「接单」` },
   ];
 
   // @组长

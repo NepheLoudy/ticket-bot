@@ -45,7 +45,21 @@ function extractText(data) {
 }
 
 /**
- * 处理收到的聊天消息事件（长连接 / HTTP 回调通用）
+ * 严格判断 @ 的是本项目机器人（对话型本体），避免把 @ 其它机器人含「接单」的消息当接单
+ * （网关的 mention 判定较宽，这里是本服务的二次校验）
+ */
+function isSelfMention(data) {
+  const mentions = data?.message?.mentions || [];
+  return mentions.some((m) => {
+    if (!m) return false;
+    if (m.mentioned_type === 'app' || m.id === 'self') return true;
+    return m.mentioned_type === 'bot' && m.name === config.bot.name;
+  });
+}
+
+/**
+ * 处理收到的聊天消息事件（网关转发的 im.message.receive_v1）
+ * 两条路径：接单确认（@对话型 + 「接单」）与 /ticket-* 指令
  */
 async function processChatMessage(data) {
   const message = data?.message;
@@ -55,6 +69,7 @@ async function processChatMessage(data) {
   const chatId = message.chat_id;
   const userId = data?.sender?.sender_id?.open_id;
   const userName = data?.sender?.sender_id?.name || '';
+  const chatType = message.chat_type || message.chatMode || '';
 
   // 忽略群（如审批群）不参与接单与指令处理，避免抢走其专属对话能力
   if (chatId && config.ignoreChatIds.includes(chatId)) {
@@ -62,8 +77,15 @@ async function processChatMessage(data) {
     return;
   }
 
-  // 接单确认不走本事件路径：接单 @ 对象是群自定义机器人「爆米花机_自动型」（webhook，收不到事件），
-  // 由 ticketService 的每分钟消息回扫按 mention 结构匹配，这里只处理对话型机器人的指令。
+  // 接单确认：群内 @对话型机器人 发送「接单」（网关把含「接单」且 @机器人 的消息秒级路由到本项目）
+  if (chatType === 'group' && text.includes('接单') && isSelfMention(data)) {
+    console.log(`[聊天服务] 收到接单确认: ${userName || userId} 在群 ${chatId}`);
+    const result = await ticketService.handleAcceptOrder(chatId, userId, userName, text);
+    if (!result?.success && result?.reason) {
+      await sendTextToChat(chatId, `⚠️ ${result.reason}`);
+    }
+    return;
+  }
 
   if (!text) return;
 
@@ -72,7 +94,6 @@ async function processChatMessage(data) {
   if (!handler) return;
 
   // 指令仅群内触发并回复到对应群；私聊指令仅白名单账号/会话可用（与 hub 同套规则）
-  const chatType = message.chat_type || message.chatMode || '';
   if (chatType !== 'group' && !isP2pCommandAllowed(userId, chatId)) {
     console.log(`[聊天服务] 拒绝私聊指令 ${cmd} - sender: ${userId || '未知'} chat_id: ${chatId}`);
     if (chatId) {
@@ -168,4 +189,5 @@ async function syncAllTickets() {
 
 module.exports = {
   processChatMessage,
+  isSelfMention,
 };

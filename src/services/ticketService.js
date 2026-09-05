@@ -15,9 +15,14 @@ const { resolvePersonGroups, buildPersonFieldsByGroups } = require('../utils/per
 //   创建时 → category 门控搬运 + 按是否指定负责人分支播报
 //   更新时 → 仅当申请状态变化时更新项目状态
 //
-// 接单确认机制：
-//   无指定负责人 → 群聊公开询问"@机器人确认接单"
-//   机器人监听群聊消息 → 收到 @ 后更新项目状态 waiting → in_progress
+// 播报通道：应用机器人（对话型）IM API 优先，webhook 兜底——
+//   接单确认依赖 @应用机器人 的消息事件（网关秒级转发），webhook 收不到事件。
+//
+// 接单确认机制（事件驱动，无轮询）：
+//   群内 @对话型机器人 发送「接单」→ 网关路由到本服务 → handleAcceptOrder
+//   未指定负责人：任一组员可确认
+//   已指定负责人：公示即绑定（写补充负责人 + 看板人员字段），
+//                 确认仅限本人，确认后推进状态并通过「负责人确认消息后通过」审批
 // ============================================================
 const NOTIFY_DEDUP_TTL = 10 * 60 * 1000;
 const recentCreateEvents = new Map(); // record_id -> timestamp
@@ -35,6 +40,11 @@ const ACTIVATION_NODE_VALUES = new Set(config.approvalNode.acceptValues);
 
 function isActivationNode(node) {
   return node !== null && node !== undefined && node !== '' && ACTIVATION_NODE_VALUES.has(String(node));
+}
+
+// 指定负责人工单的触发节点（「公示即绑定」只作用于该节点）
+function isAssignAcceptNode(node) {
+  return node !== null && node !== undefined && String(node) === config.approvalNode.assignAcceptValue;
 }
 
 // 待接单工单映射：chat_id → [{ recordId, sourceRecordId, title, expectedAssigneeId }]
@@ -275,14 +285,77 @@ async function broadcastTicket(record, scene) {
   }
 
   // 至少一个群播报成功才标记已播报，失败时允许下次重试
+  let bindResult = null;
   if (results.some((r) => r.success)) {
     broadcastedRecords.add(recordId);
     await markBroadcast(recordId, scene);
+
+    // 指定负责人工单「公示即绑定」：写补充负责人 + 看板人员字段（幂等）
+    // 状态推进与「负责人确认消息后通过」审批仍由本人 @机器人 接单确认触发
+    if (assignValue === config.assign.yesValue) {
+      bindResult = await bindAssignedTicket(record, scene);
+    }
   }
   pushHistory({ type: scene, recordId, assignValue, targets: results });
 
   console.log(`[工单事件] ${scene} 播报完成: ${results.filter((r) => r.success).length}/${results.length} 个群`);
-  return { broadcast: results.filter((r) => r.success).length };
+  return { broadcast: results.filter((r) => r.success).length, bind: bindResult };
+}
+
+/**
+ * 指定负责人工单「公示即绑定」：把指定负责人写为补充负责人（绑定接单人），
+ * 并按其所属组别合并写看板人员字段。只做绑定——项目状态推进与审批自动通过
+ * 等待本人 @机器人 接单确认后由 handleAcceptOrder 触发。
+ * @param {object} record 源表记录 {record_id, fields}
+ * @param {string} scene 场景标识（broadcast/reconcile）
+ */
+async function bindAssignedTicket(record, scene) {
+  const f = record.fields;
+  const assignee = config.assign.assigneeField ? (f[config.assign.assigneeField]?.[0] || null) : null;
+  if (!assignee?.id) return { done: false, reason: '无指定负责人' };
+
+  const recordId = record.record_id;
+  const supplementField = config.assign.supplementField;
+
+  // 1. 写「补充负责人」= 指定负责人（绑定接单人，幂等）
+  if (supplementField) {
+    try {
+      await bitableApi.updateRecord(
+        config.bitable.sourceAppToken,
+        config.bitable.sourceTableId,
+        recordId,
+        { [supplementField]: [{ id: assignee.id }] }
+      );
+      console.log(`[公示即绑定] 已写补充负责人: ${assignee.name || ''}(${assignee.id}) ← ${recordId} (${scene})`);
+    } catch (err) {
+      console.error(`[公示即绑定] 写补充负责人失败 ${recordId}:`, err.message);
+      return { done: false, reason: err.message };
+    }
+  }
+
+  // 2. 看板人员字段按负责人组别合并写入（与搬运/接单写入合并语义一致，不清空其它组别）
+  try {
+    const routeGroups = config.broadcast.routeField ? f[config.broadcast.routeField] : null;
+    const groups = await resolvePersonGroups(routeGroups, assignee);
+    const personFields = buildPersonFieldsByGroups(groups, assignee.id);
+    const target = await syncService.findTargetRecordByKey(recordId);
+    if (target && Object.keys(personFields).length > 0) {
+      const { mergePersonFields } = require('../utils/personFields');
+      const merged = mergePersonFields(target.fields, personFields);
+      await bitableApi.updateRecord(
+        config.bitable.targetAppToken,
+        config.bitable.targetTableId,
+        target.record_id,
+        merged
+      );
+      console.log(`[公示即绑定] 已按组别（${groups.join('/') || '默认owner'}）写看板人员字段: ${assignee.name || assignee.id}`);
+    }
+  } catch (err) {
+    console.warn(`[公示即绑定] 看板人员字段写入失败（不影响绑定） ${recordId}:`, err.message);
+  }
+
+  pushHistory({ type: 'bind', recordId, assigneeId: assignee.id, scene });
+  return { done: true };
 }
 
 /**
@@ -299,114 +372,12 @@ async function rebroadcastRecord(recordId) {
 }
 
 /**
- * 拉取群聊里 @机器人 的用户消息（IM 消息列表 API）
- * @param {string} chatId 群 chat_id
- * @param {number} sinceSeconds 起始时间（10 位秒级时间戳）
- * @returns {Promise<Array<{senderId, senderName, text}>>}
- */
-async function listBotMentions(chatId, sinceSeconds) {
-  const { requestAPI } = require('../feishu/client');
-  const now = Math.floor(Date.now() / 1000);
-  const res = await requestAPI(
-    'GET',
-    `/im/v1/messages?container_id_type=chat&container_id=${chatId}&start_time=${sinceSeconds}&end_time=${now}&sort=ByCreateTimeAsc&page_size=50`
-  );
-  if (res.code !== 0) throw new Error(`拉取群消息失败: ${res.msg} (code: ${res.code})`);
-
-  const result = [];
-  for (const item of res.data?.items || []) {
-    if (item.msg_type !== 'text') continue;
-    if (item.sender?.sender_type !== 'user') continue; // 跳过应用自己发的
-    const mentions = item.mentions || [];
-    // 接单 @ 对象是群自定义机器人（webhook 播报者），按 mention 结构精确匹配，不做文本关键词检索
-    const botMention = mentions.find((m) => m.name === config.broadcast.acceptBotName);
-    if (!botMention) continue;
-    let text = '';
-    try { text = String(JSON.parse(item.body?.content || '{}').text || ''); } catch (e) { /* ignore */ }
-    result.push({ senderId: item.sender.id, senderName: '', text: text.replace(/@_user_\d+/g, '').trim() });
-  }
-  return result;
-}
-
-/**
- * 补录接单：对已播报、无人接单的工单，回扫对应群里的 @机器人 消息。
- * 背景：@消息与表格事件同走长连接，共用应用的多条连接会随机抢走消息，
- * 被抢走的接单 @ 不会触发事件——由每分钟对账回扫兜底补录。
- */
-async function backfillAccepts() {
-  const markField = config.broadcast.markField;
-  const nodeField = config.approvalNode.field;
-  const supplementField = config.assign.supplementField;
-
-  const all = await bitableApi.listAllRecords(
-    config.bitable.sourceAppToken,
-    config.bitable.sourceTableId
-  );
-
-  const nowSec = Math.floor(Date.now() / 1000);
-
-  for (const record of all) {
-    const f = record.fields;
-    const node = nodeField ? f[nodeField] : '';
-    if (!isActivationNode(node) && node !== config.approvalNode.closeValue) continue; // 不在流程中
-    if (markField && !f[markField]) continue; // 未播报过（未播报的不需要补录 @）
-    const supplement = f[supplementField];
-    if (supplement && supplement.length > 0) continue; // 已有接单人
-
-    // 定位播报群：未指定负责人按「面向组别」；指定负责人按「负责人组别解析」
-    // （播发走的是负责人所属组别群，回扫必须扫同样的群）
-    const routeGroups = config.broadcast.routeField ? f[config.broadcast.routeField] : null;
-    const assignValue = config.assign.field ? f[config.assign.field] : '';
-    const assignee = config.assign.assigneeField ? (f[config.assign.assigneeField]?.[0] || null) : null;
-    const expectedAssigneeId = assignValue === config.assign.yesValue && assignee?.id ? assignee.id : null;
-    let broadcastGroups = routeGroups;
-    if (expectedAssigneeId) {
-      const assigneeGroups = await resolvePersonGroups(routeGroups, assignee);
-      if (assigneeGroups.length > 0) broadcastGroups = assigneeGroups;
-    }
-    const targets = collectTargets(broadcastGroups).filter((t) => t.chatId);
-    if (targets.length === 0) continue;
-
-    // 回扫窗口：工单发起时间之后（IM 消息列表 API page_size 上限 50，时间跨度过老的记录可能拉不全，
-    // 钳制最多回扫 7 天——接单 @ 一般发生在播报后短期内）
-    const createdSec = Math.floor((f['发起时间'] || 0) / 1000) || nowSec - 7 * 86400;
-    const startSec = Math.max(createdSec, nowSec - 7 * 86400);
-
-    for (const target of targets) {
-      try {
-        const mentions = await listBotMentions(target.chatId, startSec);
-        // 指定负责人工单仅补录本人的 @（他人 @ 忽略，留待本人确认）
-        const eligible = expectedAssigneeId
-          ? mentions.filter((m) => m.senderId === expectedAssigneeId)
-          : mentions;
-        if (eligible.length === 0) continue;
-
-        // 取最早的 @机器人 消息发送者作为接单人
-        const first = eligible[0];
-        // 解析姓名（尽力而为）
-        let senderName = first.senderId;
-        try {
-          const { requestAPI } = require('../feishu/client');
-          const u = await requestAPI('GET', `/contact/v3/users/${first.senderId}?user_id_type=open_id`);
-          if (u.code === 0) senderName = u.data?.user?.name || senderName;
-        } catch (e) { /* ignore */ }
-
-        console.log(`[接单补录] 回扫发现 @机器人 消息，补录接单: ${senderName}(${first.senderId}) → ${record.record_id}`);
-        await handleAcceptOrder(target.chatId, first.senderId, senderName, first.text);
-        break; // 该工单已补录，不再扫其他群
-      } catch (err) {
-        console.error(`[接单补录] 回扫失败 ${record.record_id} (${describeTarget(target)}):`, err.message);
-      }
-    }
-  }
-}
-
-/**
  * 轮询对账：扫描源表所有处于触发节点/回执单节点的工单
  *   - 触发节点：漏播的补播、漏搬的补搬（「已播报」标记防重复）
+ *   - 触发节点（指定负责人）：公示即绑定的补偿绑定（写补充负责人 + 看板人员字段）
  *   - 回执单节点：负责人已确认接单，推进看板状态（waiting → in_progress）
- * 背景：飞书长连接同一应用多条连接随机分发事件，事件链路只是快速触发，
- * 漏掉的部分由本函数（每分钟执行）兜底。
+ * 背景：网关不可用期间的事件由本函数（每分钟执行）兜底；
+ * 接单确认走事件驱动（@对话型+「接单」网关秒级转发），不再做消息回扫。
  */
 async function reconcileBroadcasts() {
   const markField = config.broadcast.markField;
@@ -420,6 +391,7 @@ async function reconcileBroadcasts() {
 
   let broadcast = 0;
   let synced = 0;
+  let bound = 0;
   let skipped = 0;
 
   for (const record of all) {
@@ -437,9 +409,27 @@ async function reconcileBroadcasts() {
       console.error(`[对账] 补搬运失败 ${record.record_id}:`, err.message);
     }
 
-    // 补播报（仅触发节点且未播报过；回执单节点不播报）
+    // 补播报/补绑定（仅触发节点；回执单节点不播报）
     if (!inAcceptNode) continue;
-    if (markField && f[markField]) continue;
+    if (markField && f[markField]) {
+      // 已播报：指定负责人工单做「公示即绑定」补偿（绑定失败的兜底；
+      // 状态推进与审批仍由本人 @机器人 确认触发，这里不碰）
+      if (isAssignAcceptNode(node)) {
+        const assignee = config.assign.assigneeField ? (f[config.assign.assigneeField]?.[0] || null) : null;
+        const supplement = config.assign.supplementField ? f[config.assign.supplementField] : null;
+        const alreadyBound = !!(assignee?.id && supplement?.some((p) => p?.id === assignee.id));
+        if (assignee?.id && !alreadyBound) {
+          try {
+            await bindAssignedTicket(record, 'reconcile');
+            bound++;
+          } catch (err) {
+            console.error(`[对账] 公示即绑定补偿失败 ${record.record_id}:`, err.message);
+            skipped++;
+          }
+        }
+      }
+      continue;
+    }
     try {
       const r = await broadcastTicket(record, 'reconcile');
       if (r.broadcast > 0) broadcast++;
@@ -450,17 +440,10 @@ async function reconcileBroadcasts() {
     }
   }
 
-  console.log(`[对账] 扫描 ${all.length} 条，补播 ${broadcast}，补搬运 ${synced}，跳过 ${skipped}`);
-  pushHistory({ type: 'reconcile', checked: all.length, broadcast, synced, skipped });
+  console.log(`[对账] 扫描 ${all.length} 条，补播 ${broadcast}，补搬运 ${synced}，补绑定 ${bound}，跳过 ${skipped}`);
+  pushHistory({ type: 'reconcile', checked: all.length, broadcast, synced, bound, skipped });
 
-  // 回扫群 @消息补录被分流的接单（在状态对账后执行）
-  try {
-    await backfillAccepts();
-  } catch (err) {
-    console.error('[对账] 接单补录失败:', err.message);
-  }
-
-  return { checked: all.length, broadcast, synced, skipped };
+  return { checked: all.length, broadcast, synced, bound, skipped };
 }
 
 /**
@@ -566,7 +549,11 @@ async function handleAcceptOrder(chatId, userId, userName, message) {
             const node = nodeField ? f[nodeField] : '';
             if (!isActivationNode(node) && node !== closeValue) return false;
             const sup = f[supplementField];
-            if (sup && sup.length > 0) return false;
+            if (sup && sup.length > 0) {
+              // 指定即绑定：补充负责人 == 指定负责人 视为「已绑定未确认」，仍可由本人确认
+              const assignee = config.assign.assigneeField ? (f[config.assign.assigneeField]?.[0] || null) : null;
+              if (!(assignee?.id && sup.length === 1 && sup[0]?.id === assignee.id)) return false;
+            }
             return true;
           })
           .sort((a, b) => ((b.fields['发起时间'] || 0)) - ((a.fields['发起时间'] || 0)));
