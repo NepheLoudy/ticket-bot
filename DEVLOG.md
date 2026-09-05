@@ -222,3 +222,14 @@
 ---
 
 **备注**：顶层 monorepo 中还留有一份本项目的旧快照副本（2026-08-31 `5e61ac3` 归档时点），以本仓库为准；顶层副本的滞后不影响部署（部署走本仓库 push.js）。
+
+## 阶段七 · 全项目审查修复批次（2026-09-06）
+
+### v50 · 2026-09-06 · 随本提交落地 · fix
+**全项目审查修复：审批联动申请编号口径 + 接单确认守卫 + 拆段匹配统一 + 文档对齐**
+- approvalLinkService：申请编号为超链接字段（{text,link}）时被 formatFieldValue 渲染成 `[text](link)` markdown，与审批表单里的纯文本编号永不匹配——缓存不命中、反查不命中，接单自动通过/对账补通过全链路有失效风险；改 formatFieldText 取纯文本（纯文本字段同样兼容）。
+- 接单确认补三道守卫（以源表最新状态为准）：审批节点已推进→拒绝、本人已确认过→拒绝、非多人单已被他人接单→拒绝——堵跨群陈旧条目产生虚假接单回执/重复写表的洞；registerPendingOrders 幂等（播报复试/补播不再产生重复登记）。
+- syncService mapStatus 改 matchNodeValue 拆段匹配（并行分支「；」拼接节点判不出 waiting/in_progress，v49 整改漏改处）；cron 24h 追问同步改为全量拉取+拆段匹配（原服务端等值过滤在拼接值下静默失效），发起时间缺失/非数值跳过本轮（原 NaN 比较恒 false 会误判超时立即追问）。
+- DEFAULT_CHAT_ID 支持裸 chat_id / webhook:URL（原 parseRouteTargets 要求「名字=」格式，裸值被静默丢弃致兜底群永久失效）；isSelfMention 放宽为 mentioned_type=app/bot 即命中（群内机器人显示名与配置名不一致时接单不再被静默丢弃，与 pm-robot 同款）。
+- 文档对齐：README 删失效命令（deploy:check/deploy:config）与幽灵 deploy 脚本、补 /api/bot/test-nudge 与 9 个脚本说明、配置表补 MULTI_ACCEPT_*/ASSIGN_NUDGE_HOURS/APPROVAL_NODE_ASSIGN_ACCEPT_VALUE；.env.example 补 FIELD_MAPPING/WATCHED_FIELDS/IGNORE_CHAT_IDS 占位；scripts/verify-nas.js（上轮漏播排查工具）随批入库。
+- 版本线备注：v43~v49 期间条目未及时入档，版本号以 git 提交消息为准（9dcbc8d=v49），本条起恢复逐 push 记录。

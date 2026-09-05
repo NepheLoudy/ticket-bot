@@ -43,10 +43,10 @@ function mapStatus(applyStatus, approvalNode) {
   if (!applyStatus) return 'pending';
   if (STATUS_MAPPING[applyStatus]) return STATUS_MAPPING[applyStatus];
 
-  // 审批中：按审批节点推进
+  // 审批中：按审批节点推进（节点值可能为并行分支多段拼接，统一拆段匹配）
   if (approvalNode) {
-    if (approvalNode === config.approvalNode.closeValue) return 'in_progress';
-    if (config.approvalNode.acceptValues.includes(approvalNode)) return 'waiting';
+    if (config.matchNodeValue(approvalNode, [config.approvalNode.closeValue])) return 'in_progress';
+    if (config.matchNodeValue(approvalNode, config.approvalNode.acceptValues)) return 'waiting';
   }
   return 'pending';
 }

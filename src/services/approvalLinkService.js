@@ -1,6 +1,6 @@
 const config = require('../config');
 const { requestAPI } = require('../feishu/client');
-const { formatFieldValue } = require('../utils/fields');
+const { formatFieldText } = require('../utils/fields');
 
 // ============================================================
 // 工单审批联动：群内接单 → 自动通过对应触发节点的审批任务
@@ -195,7 +195,9 @@ async function findPendingTasksByApplicationNo(applicationNo) {
  * @returns {Promise<{done: boolean, approved?: number, reason?: string}>}
  */
 async function autoApproveForTicket(sourceRecord, acceptorName, role = '组员', comment = '') {
-  const applicationNo = formatFieldValue(sourceRecord.fields['申请编号']) || '';
+  // 「申请编号」是超链接字段（{text, link}）：必须取纯文本 text，
+  // formatFieldValue 会渲染成 [text](link) markdown，与审批表单里的纯文本编号永远对不上
+  const applicationNo = String(formatFieldText(sourceRecord.fields['申请编号']) || '').trim();
   if (!applicationNo) return { done: false, reason: '无申请编号' };
 
   // 同意层守卫：仅当工单仍处于触发节点（等待接单/等待负责人确认）才自动通过，

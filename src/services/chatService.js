@@ -58,14 +58,17 @@ function pruneProcessedMessages() {
 
 /**
  * 严格判断 @ 的是本项目机器人（对话型本体），避免把 @ 其它机器人含「接单」的消息当接单
- * （网关的 mention 判定较宽，这里是本服务的二次校验）
+ * （网关的 mention 判定较宽，这里是本服务的二次校验）。
+ * name 比对只作兜底：共用应用下机器人在群里的实际显示名可能与配置名不一致
+ * （与 pm-robot 同套放宽规则），mentioned_type=app/bot 即认定 @ 的是本应用机器人
  */
 function isSelfMention(data) {
   const mentions = data?.message?.mentions || [];
   return mentions.some((m) => {
     if (!m) return false;
     if (m.mentioned_type === 'app' || m.id === 'self') return true;
-    return m.mentioned_type === 'bot' && m.name === config.bot.name;
+    if (m.mentioned_type === 'bot') return true;
+    return m.name === config.bot.name;
   });
 }
 

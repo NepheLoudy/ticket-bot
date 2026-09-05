@@ -10,7 +10,7 @@ const {
   buildReannounceCard,
   buildCloseReminderCard,
 } = require('../feishu/bot');
-const { formatFieldValue, formatFieldText } = require('../utils/fields');
+const { formatFieldValue, formatFieldText, getCreatedTime } = require('../utils/fields');
 const { getTicketApprovalUrl } = require('../feishu/bot');
 
 // 审批流原生字段名（审批表侧概念，无对应 env 配置；审批表改名需同步这里）
@@ -459,12 +459,16 @@ async function checkUnconfirmedAssignedTickets() {
   const nodeField = config.approvalNode.field;
   const assignNode = config.approvalNode.assignAcceptValue;
 
-  const filter = `CurrentValue.[${nodeField}] = "${assignNode}"`;
-  const records = await bitableApi.listAllRecords(
+  // 全量拉取后本地过滤：节点字段值可能是并行分支多段拼接（「；」分隔），
+  // 服务端等值过滤对不上会让追问静默失效，统一用 config.matchNodeValue 拆段匹配
+  // （与超时检查同款做法；均为小时级任务，全量拉取量级可接受）
+  const records = (await bitableApi.listAllRecords(
     config.bitable.sourceAppToken,
-    config.bitable.sourceTableId,
-    filter
-  );
+    config.bitable.sourceTableId
+  )).filter((r) => config.matchNodeValue(
+    nodeField ? r.fields[nodeField] : '',
+    [assignNode]
+  ));
 
   const now = Date.now();
   const nudgeMs = config.assignNudge.hours * 60 * 60 * 1000;
@@ -477,8 +481,9 @@ async function checkUnconfirmedAssignedTickets() {
     if (!assignee?.id) continue;
     const sup = supplementField ? fields[supplementField] : null;
     if (!sup?.some((p) => p?.id === assignee.id)) continue; // 未绑定（对账会补绑定），不追问
-    const created = fields['发起时间'] || 0;
-    if (!created || now - created < nudgeMs) continue;
+    // 发起时间缺失/非数值一律跳过本轮（宁漏勿误）：NaN 与 nudgeMs 比较恒 false 会误判超时立即追问
+    const created = Number(getCreatedTime(fields)) || 0;
+    if (!created || !Number.isFinite(created) || now - created < nudgeMs) continue;
     due.push({ record, assignee });
   }
 

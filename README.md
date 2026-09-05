@@ -12,7 +12,7 @@
 
 机器人订阅云文档事件 `drive.file.bitable_record_changed_v1`，并前置订阅多维表格。
 
-> **注意**：本应用与 approval-bot / knowledge-tracker / 爆米花机共用同一个飞书应用。事件统一由 **feishu-gateway** 持有唯一长连接并转发到本服务 `/api/feishu/event`（本服务 `FEISHU_USE_LONG_CONNECTION=false`），事件不再被随机分发。**每分钟轮询对账兜底保留**：扫描源表所有处于触发节点的工单，漏播的补播、漏搬的补搬（覆盖网关重启窗口）。已播报工单会写入源表「已播报」字段（`BROADCAST_MARK_FIELD`），保证跨重启/跨轮询不重复播报。
+> **注意**：本应用与 approval-bot / knowledge-tracker / 爆米花机共用同一个飞书应用。事件统一由 **feishu-gateway** 持有唯一长连接并转发到本服务 `/api/feishu/event`（本服务 `FEISHU_USE_LONG_CONNECTION=false`），事件不再被随机分发。**每分钟轮询对账兜底保留**：扫描源表所有处于触发节点的工单（补播/补绑定/审批联动补偿）与「回执单：是否结单」节点的工单（补搬运），覆盖网关重启窗口。已播报工单会写入源表「已播报」字段（`BROADCAST_MARK_FIELD`），保证跨重启/跨轮询不重复播报。
 
 **触发条件**：工单「审批节点」字段进入以下任一节点时触发播报（等价于之前的「申请状态=审批中」）。创建与更新事件均支持，通过 `record_id` 去重保证只播一次。
 
@@ -146,8 +146,13 @@ GROUP_LEADERS=机械组:ou_xxx,电控组:ou_yyy,...
 | 变量 | 说明 | 默认 |
 |------|------|------|
 | `APPROVAL_NODE_FIELD` | 审批节点字段名 | `审批节点` |
-| `APPROVAL_NODE_ACCEPT_VALUE` | 触发播报/超时判断的节点值（逗号分隔多个） | `群内有组员接单后通过,有组员接单后通过(旧),负责人确认消息后通过` |
+| `APPROVAL_NODE_ACCEPT_VALUE` | 触发播报/超时判断的节点值（逗号分隔多个） | `群内有组员接单后通过,有组员接单后通过,负责人确认消息后通过` |
+| `APPROVAL_NODE_ASSIGN_ACCEPT_VALUE` | 指定负责人工单的触发节点（「公示即绑定」与对账补绑定只作用于该节点） | `负责人确认消息后通过` |
 | `APPROVAL_NODE_CLOSE_VALUE` | 触发结单提醒的节点值 | `回执单：是否结单` |
+| `MULTI_ACCEPT_FIELD` / `MULTI_ACCEPT_YES_VALUE` | 多人接单开关字段及「是」取值 | `是否允许多人接单` / `是` |
+| `MULTI_ACCEPT_WINDOW_HOURS` | 多人单续接窗口（小时），窗口内可续接、到期自动通过审批 | `6` |
+| `MULTI_ACCEPT_WINDOW_FIELD` | 窗口截止时间写回的源表字段 | `多人接单截止` |
+| `ASSIGN_NUDGE_HOURS` | 指定负责人公示绑定后超 N 小时未确认 → 私聊追问 | `24` |
 
 ### 4. 结单提醒
 
@@ -197,6 +202,7 @@ npm start          # 生产模式
 | GET | `/api/bot/cron-status` | 定时任务状态 |
 | POST | `/api/bot/rebroadcast` | 手动补播指定工单（body: `{recordId}`，幂等） |
 | POST | `/api/bot/reconcile` | 手动触发播报对账（漏播补播/漏搬补搬） |
+| POST | `/api/bot/test-nudge` | 手动触发一次指定负责人确认追问检查（测试） |
 | POST | `/api/feishu/event` | 飞书事件 HTTP 回调（长连接未启用时） |
 
 ---
@@ -218,8 +224,13 @@ npm start          # 生产模式
 ```bash
 node scripts/discover.js               # 列出多维表格全部数据表、字段、机器人所在群聊
 node scripts/probe-data.js             # 抽样源表记录，测试通讯录权限
+node scripts/probe-fields.js           # 探测源表字段结构
+node scripts/probe-latest-nodes.js     # 查看最近工单的审批节点取值分布
 node scripts/probe-project-table.js    # 探测项目看板字段结构
+node scripts/probe-ticket-category.js  # 探测 category 字段取值
+node scripts/probe-ticket.js           # 抽样工单记录
 node scripts/query-parent-projects.js  # 查询各 category 的顶层项目
+node scripts/verify-nas.js             # 核对 NAS 上某条工单的播报/搬运结果（一次性排查工具）
 ```
 
 ---
@@ -227,9 +238,7 @@ node scripts/query-parent-projects.js  # 查询各 category 的顶层项目
 ## 八、部署到 NAS
 
 ```bash
-node push.js               # 一键部署：git 提交推送 → NAS 部署 → 上传 .env → pm2 重启
-npm run deploy:check       # 查看 NAS 日志 + 健康检查
-npm run deploy:config      # 仅上传 .env 并重启
+npm run push "提交说明"      # 一键部署：git 提交推送 → NAS 部署 → 上传 .env → pm2 重启
 ```
 
 `push.js` 流程：
@@ -249,7 +258,7 @@ npm run deploy:config      # 仅上传 .env 并重启
 ```
 ticket-bot/
 ├── src/
-│   ├── cron/index.js              # 每日汇总 + 超时检查 + 结单提醒定时任务
+│   ├── cron/index.js              # 每日汇总 + 超时检查 + 结单提醒 + 播报对账 + 24h 确认追问
 │   ├── feishu/
 │   │   ├── bitable.js             # 多维表格 API（读/写/upsert）
 │   │   ├── bot.js                 # 卡片构建 + 群路由发送 + 接单/结单提醒卡片
@@ -258,15 +267,16 @@ ticket-bot/
 │   ├── services/
 │   │   ├── ticketService.js       # 工单分支播报 + category 门控搬运 + 接单确认处理
 │   │   ├── syncService.js         # 字段映射清洗同步 + 父项目查找 + 状态映射
+│   │   ├── approvalLinkService.js # 接单 → 审批任务自动通过（白名单 + 反查兜底）
+│   │   ├── unclosedService.js     # 未结单按负责人组别分桶（供 pm-robot DDL 分栏取数）
 │   │   └── chatService.js         # 聊天指令处理 + @机器人检测
 │   ├── utils/fields.js            # 字段值格式化/归一化（超链接、日期、人员）
+│   ├── utils/personFields.js      # 人员组别解析与看板人员字段合并
 │   ├── config.js                  # 配置中心
 │   └── index.js                   # 主入口（Express API）
 ├── scripts/                       # 结构探测 / 数据抽样脚本
+├── trigger.js                     # 手动触发单条工单事件的调试入口
 ├── push.js                        # 一键部署脚本
-├── deploy-local.js                # 日志 + 健康检查
-├── deploy-config.js               # 仅上传 .env
-├── deploy-sftp.js                 # SFTP 直传（网络异常时备用）
 ├── .env.example                   # 配置模板
 └── .env                           # 实际配置（不入库）
 ```

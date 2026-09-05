@@ -73,6 +73,20 @@ function parseUserGroups(value) {
 }
 
 /**
+ * 解析兜底群 DEFAULT_CHAT_ID：支持「组别名=chat_id|webhook_url」完整格式，
+ * 也支持裸 chat_id / webhook:URL（后者没有 = 号，parseRouteTargets 解析不了会被静默丢弃）
+ */
+function parseDefaultTarget(value) {
+  const p = String(value || '').trim();
+  if (!p) return null;
+  if (p.includes('=')) return parseRouteTargets(p)[0] || null;
+  if (p.startsWith('webhook:')) {
+    return { value: 'default', chatId: '', webhookUrl: p.slice('webhook:'.length).trim() };
+  }
+  return { value: 'default', chatId: p, webhookUrl: '' };
+}
+
+/**
  * 解析组长映射 "组别名:组长open_id或姓名,..."
  * @returns {Map<string, string>}
  */
@@ -128,8 +142,8 @@ const config = {
     // 路由字段（面向组别，多选 → 一条工单并行分发到多个组群）
     routeField,
     routes: parseRouteTargets(process.env.GROUP_ROUTES),
-    // 兜底群：chat_id 或 webhook:URL
-    defaultTarget: parseRouteTargets(process.env.DEFAULT_CHAT_ID)[0] || null,
+    // 兜底群：chat_id 或 webhook:URL（也兼容 组别名=chat_id|webhook_url 完整格式）
+    defaultTarget: parseDefaultTarget(process.env.DEFAULT_CHAT_ID),
     titleField: process.env.TITLE_FIELD || '',
     statusField,
     pendingStatus: process.env.PENDING_STATUS || '',

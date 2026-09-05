@@ -247,7 +247,10 @@ function registerPendingOrders(targets, recordId, title, expectedAssigneeId = nu
     if (!pendingOrdersByChat.has(chatKey)) {
       pendingOrdersByChat.set(chatKey, []);
     }
-    pendingOrdersByChat.get(chatKey).push({
+    const list = pendingOrdersByChat.get(chatKey);
+    // 幂等：播报重试/补播会对同一工单再次登记，重复条目会让后续多次「接单」都命中
+    if (list.some((t) => t.recordId === recordId)) continue;
+    list.push({
       recordId,
       sourceRecordId: recordId,
       title,
@@ -847,6 +850,27 @@ async function handleAcceptOrder(chatId, userId, userName, message) {
         `[接单确认] 指定负责人工单拒绝他人确认: ${userName || userId} ≠ 指定负责人 ${assignee.name || ''}(${assignee.id})`
       );
       return { success: false, reason: '该工单已指定负责人，仅限本人 @机器人 确认接单' };
+    }
+
+    // 陈旧条目守卫（跨群并行登记/重复消息）：以源表最新状态为准，
+    // 节点已推进或已有人确认过的一律拒绝，防止虚假接单回执与重复写表
+    const nodeNow = config.approvalNode.field ? fresh.fields[config.approvalNode.field] : '';
+    if (!isActivationNode(nodeNow)) {
+      console.log(`[接单确认] 审批节点已推进（${nodeNow || '(空)'}），拒绝接单: ${sourceRecordId}`);
+      return { success: false, reason: '该工单审批已推进，无需再接单' };
+    }
+    const supNow = Array.isArray(fresh.fields[config.assign.supplementField])
+      ? fresh.fields[config.assign.supplementField].filter((p) => p?.id)
+      : [];
+    if (supNow.some((p) => p.id === userId)) {
+      console.log(`[接单确认] ${userName || userId} 已确认过该工单，拒绝重复确认: ${sourceRecordId}`);
+      return { success: false, reason: '你已确认过该工单' };
+    }
+    if (!isAssignTicket && !isMultiAcceptTicket(fresh.fields) && supNow.length > 0) {
+      console.log(
+        `[接单确认] 工单已被 ${formatMultiNames(supNow)} 接单，拒绝重复确认: ${userName || userId}`
+      );
+      return { success: false, reason: '该工单已有人接单' };
     }
     const role = isAssignTicket ? '负责人' : '组员';
 
