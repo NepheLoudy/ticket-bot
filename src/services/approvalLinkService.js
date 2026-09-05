@@ -126,6 +126,47 @@ async function handleApprovalTaskEvent(event) {
 }
 
 /**
+ * 缓存缺失兜底：按申请编号在审批定义近期的实例列表中定位待审任务
+ * （服务重启丢缓存 / 审批任务事件先于部署到达时使用）
+ * @param {string} applicationNo 申请编号
+ * @returns {Promise<{instanceId, taskId, approverId, approvalCode}|null>}
+ */
+async function findPendingTaskByApplicationNo(applicationNo) {
+  const approvalCode = config.approval.approvalCode;
+  if (!approvalCode) return null;
+
+  const now = Date.now();
+  const res = await requestAPI('POST', '/approval/v4/instances?user_id_type=open_id', {
+    approval_code: approvalCode,
+    start_time: now - 14 * 86400 * 1000,
+    end_time: now,
+    page_size: 100,
+  });
+  if (res.code !== 0) {
+    throw new Error(`查询审批实例列表失败: ${res.msg} (code: ${res.code})`);
+  }
+
+  for (const instanceCode of res.data?.instance_list || []) {
+    const inst = await getInstanceDetail(instanceCode);
+    const link = extractLinkInfo(inst.form);
+    if (link.applicationNo !== applicationNo) continue;
+    const task = (inst.task_list || []).find((t) => {
+      const status = String(t.status || '').toUpperCase();
+      if (['DONE', 'APPROVED', 'REJECTED', 'CANCELED'].includes(status)) return false;
+      return getAutoApproverIds().has(t.user_id || t.approver_id || '');
+    });
+    if (!task) return null;
+    return {
+      instanceId: instanceCode,
+      taskId: task.id || task.task_id,
+      approverId: task.user_id || task.approver_id || '',
+      approvalCode: inst.approval_id || approvalCode,
+    };
+  }
+  return null;
+}
+
+/**
  * 接单成功后自动通过对应审批任务
  * @param {object} sourceRecord 源表工单记录 {record_id, fields}
  * @param {string} acceptorName 接单人姓名（写进审批意见留痕）
@@ -145,7 +186,19 @@ async function autoApproveForTicket(sourceRecord, acceptorName, role = '组员')
 
   let pending = pendingTasks.get(applicationNo);
 
-  // 缓存缺失兜底：事件还没到或重启丢缓存时，直接查实例列表定位
+  // 缓存缺失兜底：事件还没到或重启丢缓存时，按申请编号反查实例列表定位待审任务
+  if (!pending) {
+    try {
+      const found = await findPendingTaskByApplicationNo(applicationNo);
+      if (found) {
+        pending = found;
+        pendingTasks.set(applicationNo, found);
+        console.log(`[审批联动] 缓存缺失，已按申请编号反查定位待审任务: ${applicationNo} (task ${found.taskId})`);
+      }
+    } catch (err) {
+      console.warn(`[审批联动] 反查审批实例失败 ${applicationNo}: ${err.message}`);
+    }
+  }
   if (!pending) {
     return { done: false, reason: '审批任务尚未到达缓存（等待审批事件推送后重试）' };
   }
