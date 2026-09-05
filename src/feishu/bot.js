@@ -309,34 +309,10 @@ function buildReannounceCard(record, elapsedHours, groupName) {
 }
 
 /**
- * 结单提醒卡片（审批节点=回执单：是否结单，临近理想结单时间，引导到审批界面确认结单）
- * @param {object} record 工单记录
- * @param {{id: string, name: string}|null} handler 当前处理人
+ * 结单提醒卡片已随「先私聊后转群」兜底移除而下线（2026-09-05）：
+ * 结单提醒只私聊当前处理人，未结单工单的持续曝光由 pm-robot
+ * 每日 DDL 播报的「工单结单」分栏承担
  */
-function buildCloseReminderCard(record, handler) {
-  const { record_id, fields } = record;
-  const title = getTicketTitle(fields, record_id);
-  const at = buildAtTag(handler?.id);
-  const approvalUrl = getTicketApprovalUrl(fields, record_id);
-
-  const elements = [
-    { tag: 'markdown', content: `**${title}**` },
-    { tag: 'hr' },
-    { tag: 'markdown', content: `⏰ 工单已超过理想结单时间，${at} **${handler?.name || ''}** 请尽快确认结单` },
-    ...buildTicketFieldLines(fields, [config.broadcast.titleField]),
-    { tag: 'hr' },
-    { tag: 'markdown', content: `👉 请前往 [审批界面](${approvalUrl}) 完成结单确认` },
-  ];
-
-  return {
-    config: { wide_screen_mode: true, enable_forward: true },
-    elements,
-    header: {
-      template: 'red',
-      title: { content: '⏰ 结单提醒', tag: 'plain_text' },
-    },
-  };
-}
 
 module.exports = {
   sendCardToChat,
@@ -350,5 +326,4 @@ module.exports = {
   buildTicketAssignCard,
   buildDailySummaryCard,
   buildReannounceCard,
-  buildCloseReminderCard,
 };

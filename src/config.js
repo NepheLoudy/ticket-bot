@@ -205,7 +205,7 @@ const config = {
     autoApproverIds: parseListConfig(process.env.APPROVAL_AUTO_APPROVER_IDS),
   },
 
-  // 结单提醒（临近理想结单时间时，应用机器人先私聊，未结单再转群引导）
+  // 结单提醒（理想结单时间过后 N 天，仅私聊当前处理人一次；转群兜底已移除）
   closeReminder: {
     deadlineField: process.env.DEADLINE_FIELD || '理想结单时间',
     leadDays: Number(process.env.CLOSE_REMINDER_LEAD_DAYS || 1),
