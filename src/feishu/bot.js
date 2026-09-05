@@ -181,7 +181,8 @@ function buildTicketOpenCard(record) {
 }
 
 /**
- * 已指定负责人：在其所属组别的群聊中 @本人 提醒有工单发布
+ * 已指定负责人：在其所属组别的群聊中 @本人 公示工单，仅限本人 @机器人 确认接单
+ * （确认后机器人自动通过「负责人确认消息后通过」审批节点并推进项目状态）
  * @param {object} record 源表记录
  * @param {{id: string, name: string}|null} assignee 指定负责人
  */
@@ -195,6 +196,9 @@ function buildTicketAssignCard(record, assignee) {
     { tag: 'hr' },
     { tag: 'markdown', content: `📬 ${at} **${assignee?.name || ''}** 有新工单发布，请及时跟进` },
     ...buildTicketFieldLines(fields, [config.broadcast.titleField]),
+    { tag: 'hr' },
+    { tag: 'markdown', content: `💡 **接单方式**：请本人在群内发送消息 **@${config.broadcast.acceptBotName}** 确认接单` },
+    { tag: 'note', elements: [{ tag: 'plain_text', content: '确认后机器人会自动通过审批并更新项目状态为"进行中"' }] },
   ];
 
   return {

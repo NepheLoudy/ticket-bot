@@ -37,9 +37,33 @@ function isActivationNode(node) {
   return node !== null && node !== undefined && node !== '' && ACTIVATION_NODE_VALUES.has(String(node));
 }
 
-// 待接单工单映射：chat_id → [{ recordId, sourceRecordId, title }]
-// 用于接单确认时查找对应工单
+// 待接单工单映射：chat_id → [{ recordId, sourceRecordId, title, expectedAssigneeId }]
+// 用于接单确认时查找对应工单；expectedAssigneeId 非空表示该工单仅限指定负责人本人确认
 const pendingOrdersByChat = new Map();
+
+/**
+ * 登记待接单工单（播报成功的群各记一条，供接单确认匹配）
+ * @param {Array<{chatId: string, webhookUrl: string}>} targets 播报目标
+ * @param {string} recordId 源表记录 ID
+ * @param {string} title 工单标题
+ * @param {string|null} expectedAssigneeId 指定负责人 open_id（无指定负责人时为 null）
+ */
+function registerPendingOrders(targets, recordId, title, expectedAssigneeId = null) {
+  for (const target of targets) {
+    const chatKey = target.chatId || target.webhookUrl;
+    if (!chatKey) continue;
+    if (!pendingOrdersByChat.has(chatKey)) {
+      pendingOrdersByChat.set(chatKey, []);
+    }
+    pendingOrdersByChat.get(chatKey).push({
+      recordId,
+      sourceRecordId: recordId,
+      title,
+      expectedAssigneeId,
+      time: Date.now(),
+    });
+  }
+}
 
 function pushHistory(entry) {
   broadcastHistory.unshift({ time: new Date().toISOString(), ...entry });
@@ -217,26 +241,17 @@ async function broadcastTicket(record, scene) {
     targets = collectTargets(config.broadcast.routeField ? f[config.broadcast.routeField] : '');
     card = buildTicketOpenCard(record);
 
-    // 记录待接单工单（用于接单确认）
-    const title = getTicketTitle(f, recordId);
-    for (const target of targets) {
-      const chatKey = target.chatId || target.webhookUrl;
-      if (!pendingOrdersByChat.has(chatKey)) {
-        pendingOrdersByChat.set(chatKey, []);
-      }
-      pendingOrdersByChat.get(chatKey).push({
-        recordId,
-        sourceRecordId: recordId,
-        title,
-        time: Date.now(),
-      });
-    }
+    // 记录待接单工单（任一组员可确认）
+    registerPendingOrders(targets, recordId, getTicketTitle(f, recordId));
   } else if (assignValue === config.assign.yesValue) {
-    // 已指定负责人 → 查询其所属组别，在对应群聊 @本人
+    // 已指定负责人 → 查询其所属组别，在对应群聊 @本人 公示
     const assignee = config.assign.assigneeField ? (f[config.assign.assigneeField]?.[0] || null) : null;
     const groupNames = await resolveAssigneeGroups(record, assignee);
     targets = collectTargets(groupNames);
     card = buildTicketAssignCard(record, assignee);
+
+    // 记录待接单工单（仅限指定负责人本人 @机器人 确认，确认后代理通过「负责人确认消息后通过」节点）
+    registerPendingOrders(targets, recordId, getTicketTitle(f, recordId), assignee?.id || null);
   } else {
     console.log(`[工单事件] 「${config.assign.field}」值「${assignValue}」无法识别，跳过播报`);
     return { broadcast: 0, note: '未识别是否指定负责人' };
@@ -338,9 +353,18 @@ async function backfillAccepts() {
     const supplement = f[supplementField];
     if (supplement && supplement.length > 0) continue; // 已有接单人
 
-    // 定位该工单面向组别对应的群
+    // 定位播报群：未指定负责人按「面向组别」；指定负责人按「负责人组别解析」
+    // （播发走的是负责人所属组别群，回扫必须扫同样的群）
     const routeGroups = config.broadcast.routeField ? f[config.broadcast.routeField] : null;
-    const targets = collectTargets(routeGroups).filter((t) => t.chatId);
+    const assignValue = config.assign.field ? f[config.assign.field] : '';
+    const assignee = config.assign.assigneeField ? (f[config.assign.assigneeField]?.[0] || null) : null;
+    const expectedAssigneeId = assignValue === config.assign.yesValue && assignee?.id ? assignee.id : null;
+    let broadcastGroups = routeGroups;
+    if (expectedAssigneeId) {
+      const assigneeGroups = await resolvePersonGroups(routeGroups, assignee);
+      if (assigneeGroups.length > 0) broadcastGroups = assigneeGroups;
+    }
+    const targets = collectTargets(broadcastGroups).filter((t) => t.chatId);
     if (targets.length === 0) continue;
 
     // 回扫窗口：工单发起时间之后（IM 消息列表 API page_size 上限 50，时间跨度过老的记录可能拉不全，
@@ -351,10 +375,14 @@ async function backfillAccepts() {
     for (const target of targets) {
       try {
         const mentions = await listBotMentions(target.chatId, startSec);
-        if (mentions.length === 0) continue;
+        // 指定负责人工单仅补录本人的 @（他人 @ 忽略，留待本人确认）
+        const eligible = expectedAssigneeId
+          ? mentions.filter((m) => m.senderId === expectedAssigneeId)
+          : mentions;
+        if (eligible.length === 0) continue;
 
         // 取最早的 @机器人 消息发送者作为接单人
-        const first = mentions[0];
+        const first = eligible[0];
         // 解析姓名（尽力而为）
         let senderName = first.senderId;
         try {
@@ -507,9 +535,13 @@ async function handleAcceptOrder(chatId, userId, userName, message) {
   }
   console.log(`[接单确认] 收到消息: ${userName || '(未知)'}(${userId}) 在群 ${chatId}: ${message}`);
 
-  // 查找该群的待接单工单
+  // 查找该群的待接单工单（查到即挂回映射，回退匹配结果对后续消息持久生效）
   const chatKey = chatId;
-  const pendingList = pendingOrdersByChat.get(chatKey) || [];
+  let pendingList = pendingOrdersByChat.get(chatKey);
+  if (!pendingList) {
+    pendingList = [];
+    pendingOrdersByChat.set(chatKey, pendingList);
+  }
 
   if (pendingList.length === 0) {
     // 内存映射重启后清空：回退查询源表——触发节点/回执单节点 + 补充负责人为空 + 面向组别匹配该群的最新工单
@@ -535,17 +567,42 @@ async function handleAcceptOrder(chatId, userId, userName, message) {
             if (!isActivationNode(node) && node !== closeValue) return false;
             const sup = f[supplementField];
             if (sup && sup.length > 0) return false;
-            const groups = f[config.broadcast.routeField];
-            const groupList = Array.isArray(groups) ? groups.map(String) : groups ? [String(groups)] : [];
-            return groupList.some((g) => groupsOfChat.includes(g));
+            return true;
           })
           .sort((a, b) => ((b.fields['发起时间'] || 0)) - ((a.fields['发起时间'] || 0)));
-        const latest = candidates[0];
+
+        // 首选：面向组别覆盖该群的工单（一个群可承载多个组别，如电控/硬件共群）
+        let matched = candidates.find((r) => {
+          const groups = r.fields[config.broadcast.routeField];
+          const groupList = Array.isArray(groups) ? groups.map(String) : groups ? [String(groups)] : [];
+          return groupList.some((g) => groupsOfChat.includes(g));
+        });
+
+        // 补充：指定负责人工单的播报群来自「负责人组别解析」（USER_GROUPS → 通讯录），
+        // 可能不在工单「面向组别」里——按负责人所属组别与该群组别求交集匹配
+        if (!matched) {
+          for (const r of candidates) {
+            const assignee = config.assign.assigneeField ? (r.fields[config.assign.assigneeField]?.[0] || null) : null;
+            if (!assignee?.id) continue;
+            const routeGroups = config.broadcast.routeField ? r.fields[config.broadcast.routeField] : null;
+            const groups = await resolvePersonGroups(routeGroups, assignee);
+            if (groups.some((g) => groupsOfChat.includes(g))) {
+              matched = r;
+              break;
+            }
+          }
+        }
+
+        const latest = matched;
         if (latest) {
+          const assigneeId = config.assign.assigneeField
+            ? (latest.fields[config.assign.assigneeField]?.[0]?.id || null)
+            : null;
           pendingList.push({
             recordId: latest.record_id,
             sourceRecordId: latest.record_id,
             title: getTicketTitle(latest.fields, latest.record_id),
+            expectedAssigneeId: assigneeId,
             time: Date.now(),
           });
           console.log(`[接单确认] 内存映射为空，已回退匹配到工单: ${pendingList[0].title} (${pendingList[0].recordId})`);
@@ -561,13 +618,43 @@ async function handleAcceptOrder(chatId, userId, userName, message) {
     return { success: false, reason: '无待接单工单' };
   }
 
-  // 取最新的待接单工单
-  const latest = pendingList[pendingList.length - 1];
+  // 取最新的待接单工单：指定负责人工单仅匹配本人（expectedAssigneeId 非空且不是发送者时跳过）
+  let latestIdx = -1;
+  for (let i = pendingList.length - 1; i >= 0; i--) {
+    const expected = pendingList[i].expectedAssigneeId;
+    if (!expected || expected === userId) {
+      latestIdx = i;
+      break;
+    }
+  }
+  if (latestIdx === -1) {
+    console.log(`[接单确认] 该群待接单工单均为指定其他负责人，拒绝 ${userName || userId} 确认`);
+    return { success: false, reason: '待接单工单已指定其他负责人，仅限本人确认' };
+  }
+  const latest = pendingList[latestIdx];
   const { recordId, sourceRecordId, title } = latest;
 
   console.log(`[接单确认] 匹配到工单: ${title} (${recordId})`);
 
   try {
+    // 0. 重查最新记录（以源表为准，播报后的指派变更不误判）：
+    //    指定负责人工单仅限本人 @机器人 确认（授权门禁，记录拉取失败按拒绝处理，等下轮回扫重试）
+    const fresh = await bitableApi.getRecord(
+      config.bitable.sourceAppToken,
+      config.bitable.sourceTableId,
+      sourceRecordId
+    );
+    const assignValue = config.assign.field ? fresh.fields[config.assign.field] : '';
+    const assignee = config.assign.assigneeField ? (fresh.fields[config.assign.assigneeField]?.[0] || null) : null;
+    const isAssignTicket = assignValue === config.assign.yesValue && !!assignee?.id;
+    if (isAssignTicket && assignee.id !== userId) {
+      console.log(
+        `[接单确认] 指定负责人工单拒绝他人确认: ${userName || userId} ≠ 指定负责人 ${assignee.name || ''}(${assignee.id})`
+      );
+      return { success: false, reason: '该工单已指定负责人，仅限本人 @机器人 确认接单' };
+    }
+    const role = isAssignTicket ? '负责人' : '组员';
+
     // 1. 更新项目状态为 in_progress（搬运时已是 waiting，确认接单才开始执行）
     await syncService.updateProjectStatus(sourceRecordId, 'in_progress');
     console.log(`[接单确认] 项目状态更新为 in_progress`);
@@ -592,12 +679,7 @@ async function handleAcceptOrder(chatId, userId, userName, message) {
     //     视觉→sjcontributers，宣运→xycontributers；组别解析：USER_GROUPS → 通讯录 → 工单面向组别兜底）
     //     与看板已有人员合并（同字段多人并存），不清空其它组别
     try {
-      const srcRecord = await bitableApi.getRecord(
-        config.bitable.sourceAppToken,
-        config.bitable.sourceTableId,
-        sourceRecordId
-      );
-      const routeGroups = config.broadcast.routeField ? srcRecord.fields[config.broadcast.routeField] : null;
+      const routeGroups = config.broadcast.routeField ? fresh.fields[config.broadcast.routeField] : null;
       const groups = await resolvePersonGroups(routeGroups, { id: userId, name: userName });
       const personFields = buildPersonFieldsByGroups(groups, userId);
       const target = await syncService.findTargetRecordByKey(sourceRecordId);
@@ -619,7 +701,7 @@ async function handleAcceptOrder(chatId, userId, userName, message) {
     }
 
     // 3. 从待接单列表中移除
-    pendingList.pop();
+    pendingList.splice(latestIdx, 1);
     if (pendingList.length === 0) {
       pendingOrdersByChat.delete(chatKey);
     }
@@ -643,15 +725,15 @@ async function handleAcceptOrder(chatId, userId, userName, message) {
       await sendCardToTarget(target, confirmCard);
     }
 
-    // 5. 审批联动：自动通过「群内有组员接单后通过」节点（尽力而为，不影响接单结果）
+    // 5. 审批联动：自动通过对应触发节点（未指定负责人→「群内有组员接单后通过」；
+    //    指定负责人→「负责人确认消息后通过」，仅本人确认会走到这里；尽力而为，不影响接单结果）
     try {
       const { autoApproveForTicket } = require('./approvalLinkService');
-      const approveResult = await autoApproveForTicket(
-        await bitableApi.getRecord(config.bitable.sourceAppToken, config.bitable.sourceTableId, sourceRecordId),
-        userName
-      );
+      const approveResult = await autoApproveForTicket(fresh, userName, role);
       if (approveResult.done) {
         console.log('[接单确认] 审批联动: 已自动通过审批节点');
+      } else if (approveResult.reason) {
+        console.log(`[接单确认] 审批联动未执行: ${approveResult.reason}`);
       }
     } catch (err) {
       console.warn('[接单确认] 审批联动失败(不影响接单):', err.message);

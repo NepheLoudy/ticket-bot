@@ -3,17 +3,29 @@ const { requestAPI } = require('../feishu/client');
 const { formatFieldValue } = require('../utils/fields');
 
 // ============================================================
-// 工单审批联动：群内接单 → 自动通过「群内有组员接单后通过」审批节点
+// 工单审批联动：群内接单 → 自动通过对应触发节点的审批任务
 //
-// 链路：审批任务事件（approval_task，秒级）→ 缓存待审任务
+// 覆盖两条工单分支（节点名互斥，同一实例同时只会有一个待审任务）：
+//   - 未指定负责人：群内有组员接单后通过（任一组员 @机器人 接单即通过）
+//   - 已指定负责人：负责人确认消息后通过（仅指定负责人本人确认后通过）
+//
+// 链路：审批任务事件（approval_task，秒级）→ 按审批人白名单缓存待审任务
 //       {申请编号 → {instanceId, taskId, approverId}}
 //       群内 @机器人 接单成功 → 以该任务审批人身份调同意 API，
 //       审批流自动流转（节点审批人可全部配置为同一个人）。
 // 事件/接单之间有时差：缓存优先，缓存缺失时按申请编号反查实例兜底。
+// 两层防误同：缓存层按审批人白名单过滤（事件不带节点名）；
+//             同意层校验工单「审批节点」必须处于触发节点，
+//             防止实例推进到回执单等节点后误通过新节点的任务。
 // ============================================================
 
 // 申请编号 → 待审任务（一个实例同分支只有一个待审任务）
 const pendingTasks = new Map();
+
+/** 联动审批人白名单（单值 + 多值配置取并集） */
+function getAutoApproverIds() {
+  return new Set([config.approval.autoApproverId, ...config.approval.autoApproverIds].filter(Boolean));
+}
 
 /** 拉取审批实例详情 */
 async function getInstanceDetail(instanceId) {
@@ -54,11 +66,10 @@ async function handleApprovalTaskEvent(event) {
   const configuredCode = config.approval.approvalCode;
   if (configuredCode && evt.approval_code && evt.approval_code !== configuredCode) return;
 
-  // 未配置自动审批人时联动关闭：无法区分「群内有组员接单后通过」与
-  // 「负责人确认消息后通过」等其它节点的任务（事件与实例详情都不带节点名，
-  // 审批人身份是唯一可靠判据），误通过其它节点会打乱审批流。
+  const approverAllow = getAutoApproverIds();
+  // 名单全空时联动关闭：误通过「回执单」等其它节点的任务会打乱审批流。
   // 关闭状态下仍记录到达任务的审批人 open_id——首次部署时用它完成配置激活。
-  if (!config.approval.autoApproverId) {
+  if (approverAllow.size === 0) {
     try {
       const inst = await getInstanceDetail(instanceId);
       const t = (inst.task_list || []).find((x) => x.id === taskId || x.task_id === taskId);
@@ -94,8 +105,14 @@ async function handleApprovalTaskEvent(event) {
   }
 
   const approverId = task.user_id || task.approver_id || '';
-  // 配置了工单审批人时只联动其名下任务（自动通过只该动「群内有组员接单后通过」节点）
-  if (config.approval.autoApproverId && approverId !== config.approval.autoApproverId) return;
+  // 只联动白名单审批人名下的任务（触发节点的审批人）；名单外的任务到达时留痕，
+  // 便于核对 APPROVAL_AUTO_APPROVER_ID 是否配错（如张郭浩 open_id 变动）
+  if (!approverAllow.has(approverId)) {
+    console.log(
+      `[审批联动] 跳过非联动审批人的任务: ${link.applicationNo} task ${taskId} 审批人 open_id=${approverId || '?'}`
+    );
+    return;
+  }
 
   pendingTasks.set(link.applicationNo, {
     instanceId,
@@ -112,10 +129,19 @@ async function handleApprovalTaskEvent(event) {
  * 接单成功后自动通过对应审批任务
  * @param {object} sourceRecord 源表工单记录 {record_id, fields}
  * @param {string} acceptorName 接单人姓名（写进审批意见留痕）
+ * @param {string} role 接单人角色（组员/负责人，写进审批意见）
  */
-async function autoApproveForTicket(sourceRecord, acceptorName) {
+async function autoApproveForTicket(sourceRecord, acceptorName, role = '组员') {
   const applicationNo = formatFieldValue(sourceRecord.fields['申请编号']) || '';
   if (!applicationNo) return { done: false, reason: '无申请编号' };
+
+  // 同意层守卫：仅当工单仍处于触发节点（等待接单/等待负责人确认）才自动通过，
+  // 防止实例已推进到「回执单：是否结单」等节点后误通过缓存里/新到达的其它节点任务
+  const nodeField = config.approvalNode.field;
+  const node = nodeField ? String(sourceRecord.fields[nodeField] ?? '') : '';
+  if (nodeField && !config.approvalNode.acceptValues.includes(node)) {
+    return { done: false, reason: `审批节点「${node || '(空)'}」不在联动范围，跳过自动通过` };
+  }
 
   let pending = pendingTasks.get(applicationNo);
 
@@ -130,7 +156,7 @@ async function autoApproveForTicket(sourceRecord, acceptorName) {
       instance_code: pending.instanceId,
       task_id: pending.taskId,
       user_id: pending.approverId,
-      comment: `组员 ${acceptorName || '（未知）'} 已在群内确认接单，自动通过`,
+      comment: `${role} ${acceptorName || '（未知）'} 已在群内确认接单，自动通过`,
     });
     if (res.code !== 0) {
       console.error(`[审批联动] 自动通过失败 ${applicationNo}: ${res.msg} (code: ${res.code})`);
