@@ -9,9 +9,13 @@ const { formatFieldValue } = require('../utils/fields');
 //   - 未指定负责人：群内有组员接单后通过（任一组员 @机器人 接单即通过）
 //   - 已指定负责人：负责人确认消息后通过（仅指定负责人本人确认后通过）
 //
-// 链路：审批任务事件（approval_task，秒级）→ 按审批人白名单缓存待审任务
-//       {申请编号 → {instanceId, taskId, approverId}}
-//       群内 @机器人 接单成功 → 以该任务审批人身份调同意 API，
+// 无指定负责人分支的审批流按「面向组别」并行展开（机械/电控/硬件/视觉/管理层/宣运
+// 各有一个「XX有组员接单后通过」节点）：面向复数组别的工单会同时存在多个待审任务，
+// 必须全部通过流程才能汇合流转——因此缓存与通过都按任务集合处理（批量通过）。
+//
+// 链路：审批任务事件（approval_task，秒级）→ 按「审批人 == 配置的工单审批人」过滤并缓存
+//       {申请编号 → {taskId → {instanceId, taskId, approverId}}}
+//       群内 @机器人 接单成功 → 以各任务审批人身份逐个调同意 API，
 //       审批流自动流转（节点审批人可全部配置为同一个人）。
 // 事件/接单之间有时差：缓存优先，缓存缺失时按申请编号反查实例兜底。
 // 两层防误同：缓存层按审批人白名单过滤（事件不带节点名）；
@@ -19,8 +23,22 @@ const { formatFieldValue } = require('../utils/fields');
 //             防止实例推进到回执单等节点后误通过新节点的任务。
 // ============================================================
 
-// 申请编号 → 待审任务（一个实例同分支只有一个待审任务）
-const pendingTasks = new Map();
+// 申请编号 → 待审任务集合（并行分支下同一实例可有多个待审任务）
+const pendingTasks = new Map(); // applicationNo -> Map(taskId -> task)
+
+function upsertPendingTask(applicationNo, task) {
+  if (!pendingTasks.has(applicationNo)) {
+    pendingTasks.set(applicationNo, new Map());
+  }
+  pendingTasks.get(applicationNo).set(task.taskId, task);
+}
+
+function removePendingTask(applicationNo, taskId) {
+  const tasks = pendingTasks.get(applicationNo);
+  if (!tasks) return;
+  tasks.delete(taskId);
+  if (tasks.size === 0) pendingTasks.delete(applicationNo);
+}
 
 /** 联动审批人白名单（单值 + 多值配置取并集） */
 function getAutoApproverIds() {
@@ -100,7 +118,7 @@ async function handleApprovalTaskEvent(event) {
   if (!link.applicationNo) return; // 找不到申请编号，无法与工单关联
 
   if (['DONE', 'APPROVED', 'REJECTED', 'CANCELED'].includes(taskStatus)) {
-    pendingTasks.delete(link.applicationNo);
+    removePendingTask(link.applicationNo, taskId);
     return;
   }
 
@@ -114,7 +132,7 @@ async function handleApprovalTaskEvent(event) {
     return;
   }
 
-  pendingTasks.set(link.applicationNo, {
+  upsertPendingTask(link.applicationNo, {
     instanceId,
     taskId,
     approverId,
@@ -122,18 +140,19 @@ async function handleApprovalTaskEvent(event) {
     groups: link.groups,
     cachedAt: Date.now(),
   });
-  console.log(`[审批联动] 已缓存待审任务: ${link.applicationNo} (task ${taskId}, approver ${approverId})`);
+  console.log(`[审批联动] 已缓存待审任务: ${link.applicationNo} (task ${taskId}, approver ${approverId}，当前缓存 ${pendingTasks.get(link.applicationNo).size} 个)`);
 }
 
 /**
  * 缓存缺失兜底：按申请编号在审批定义近期的实例列表中定位待审任务
- * （服务重启丢缓存 / 审批任务事件先于部署到达时使用）
+ * （服务重启丢缓存 / 审批任务事件先于部署到达时使用）。
+ * 并行分支下同一实例可能有多个待审任务，全部返回。
  * @param {string} applicationNo 申请编号
- * @returns {Promise<{instanceId, taskId, approverId, approvalCode}|null>}
+ * @returns {Promise<Array<{instanceId, taskId, approverId, approvalCode}>>}
  */
-async function findPendingTaskByApplicationNo(applicationNo) {
+async function findPendingTasksByApplicationNo(applicationNo) {
   const approvalCode = config.approval.approvalCode;
-  if (!approvalCode) return null;
+  if (!approvalCode) return [];
 
   const now = Date.now();
   const res = await requestAPI('POST', '/approval/v4/instances?user_id_type=open_id', {
@@ -150,78 +169,91 @@ async function findPendingTaskByApplicationNo(applicationNo) {
     const inst = await getInstanceDetail(instanceCode);
     const link = extractLinkInfo(inst.form);
     if (link.applicationNo !== applicationNo) continue;
-    const task = (inst.task_list || []).find((t) => {
-      const status = String(t.status || '').toUpperCase();
-      if (['DONE', 'APPROVED', 'REJECTED', 'CANCELED'].includes(status)) return false;
-      return getAutoApproverIds().has(t.user_id || t.approver_id || '');
-    });
-    if (!task) return null;
-    return {
-      instanceId: instanceCode,
-      taskId: task.id || task.task_id,
-      approverId: task.user_id || task.approver_id || '',
-      approvalCode: inst.approval_id || approvalCode,
-    };
+    // 命中实例即返回其全部待审任务（并行分支可同时挂多个触发节点任务）
+    return (inst.task_list || [])
+      .filter((t) => {
+        const status = String(t.status || '').toUpperCase();
+        if (['DONE', 'APPROVED', 'REJECTED', 'CANCELED'].includes(status)) return false;
+        return getAutoApproverIds().has(t.user_id || t.approver_id || '');
+      })
+      .map((t) => ({
+        instanceId: instanceCode,
+        taskId: t.id || t.task_id,
+        approverId: t.user_id || t.approver_id || '',
+        approvalCode: inst.approval_id || approvalCode,
+      }));
   }
-  return null;
+  return [];
 }
 
 /**
- * 接单成功后自动通过对应审批任务
+ * 接单成功后自动通过对应审批任务（批量：并行分支的全部待审任务逐一通过）
  * @param {object} sourceRecord 源表工单记录 {record_id, fields}
  * @param {string} acceptorName 接单人姓名（写进审批意见留痕）
- * @param {string} role 接单人角色（组员/负责人，写进审批意见）
+ * @param {string} role 接单人角色（组员/负责人/多人单，写进审批意见）
+ * @param {string} comment 完整审批意见（留空用默认模板）
+ * @returns {Promise<{done: boolean, approved?: number, reason?: string}>}
  */
-async function autoApproveForTicket(sourceRecord, acceptorName, role = '组员') {
+async function autoApproveForTicket(sourceRecord, acceptorName, role = '组员', comment = '') {
   const applicationNo = formatFieldValue(sourceRecord.fields['申请编号']) || '';
   if (!applicationNo) return { done: false, reason: '无申请编号' };
 
   // 同意层守卫：仅当工单仍处于触发节点（等待接单/等待负责人确认）才自动通过，
-  // 防止实例已推进到「回执单：是否结单」等节点后误通过缓存里/新到达的其它节点任务
+  // 防止实例已推进到「回执单：是否结单」等节点后误通过缓存里/新到达的其它节点任务。
+  // 节点值可能为并行分支多段拼接（「；」分隔），用 matchNodeValue 拆段匹配
   const nodeField = config.approvalNode.field;
   const node = nodeField ? String(sourceRecord.fields[nodeField] ?? '') : '';
-  if (nodeField && !config.approvalNode.acceptValues.includes(node)) {
+  if (nodeField && !config.matchNodeValue(node, config.approvalNode.acceptValues)) {
     return { done: false, reason: `审批节点「${node || '(空)'}」不在联动范围，跳过自动通过` };
   }
 
-  let pending = pendingTasks.get(applicationNo);
+  let tasks = [...(pendingTasks.get(applicationNo)?.values() || [])];
 
   // 缓存缺失兜底：事件还没到或重启丢缓存时，按申请编号反查实例列表定位待审任务
-  if (!pending) {
+  if (tasks.length === 0) {
     try {
-      const found = await findPendingTaskByApplicationNo(applicationNo);
-      if (found) {
-        pending = found;
-        pendingTasks.set(applicationNo, found);
-        console.log(`[审批联动] 缓存缺失，已按申请编号反查定位待审任务: ${applicationNo} (task ${found.taskId})`);
+      tasks = await findPendingTasksByApplicationNo(applicationNo);
+      for (const t of tasks) upsertPendingTask(applicationNo, t);
+      if (tasks.length > 0) {
+        console.log(`[审批联动] 缓存缺失，已按申请编号反查定位 ${tasks.length} 个待审任务: ${applicationNo}`);
       }
     } catch (err) {
       console.warn(`[审批联动] 反查审批实例失败 ${applicationNo}: ${err.message}`);
     }
   }
-  if (!pending) {
+  if (tasks.length === 0) {
     return { done: false, reason: '审批任务尚未到达缓存（等待审批事件推送后重试）' };
   }
 
-  try {
-    const res = await requestAPI('POST', '/approval/v4/tasks/approve?user_id_type=open_id', {
-      approval_code: pending.approvalCode,
-      instance_code: pending.instanceId,
-      task_id: pending.taskId,
-      user_id: pending.approverId,
-      comment: `${role} ${acceptorName || '（未知）'} 已在群内确认接单，自动通过`,
-    });
-    if (res.code !== 0) {
-      console.error(`[审批联动] 自动通过失败 ${applicationNo}: ${res.msg} (code: ${res.code})`);
-      return { done: false, reason: res.msg };
+  let approved = 0;
+  let lastReason = null;
+  for (const pending of tasks) {
+    try {
+      const res = await requestAPI('POST', '/approval/v4/tasks/approve?user_id_type=open_id', {
+        approval_code: pending.approvalCode,
+        instance_code: pending.instanceId,
+        task_id: pending.taskId,
+        user_id: pending.approverId,
+        comment: comment || `${role} ${acceptorName || '（未知）'} 已在群内确认接单，自动通过`,
+      });
+      if (res.code === 0) {
+        approved++;
+        removePendingTask(applicationNo, pending.taskId);
+      } else {
+        lastReason = res.msg;
+        console.error(`[审批联动] 自动通过失败 ${applicationNo} task ${pending.taskId}: ${res.msg} (code: ${res.code})`);
+      }
+    } catch (err) {
+      lastReason = err.message;
+      console.error(`[审批联动] 调用同意接口失败 ${applicationNo} task ${pending.taskId}:`, err.message);
     }
-    pendingTasks.delete(applicationNo);
-    console.log(`[审批联动] 已自动通过审批: ${applicationNo}（task ${pending.taskId}）`);
-    return { done: true };
-  } catch (err) {
-    console.error(`[审批联动] 调用同意接口失败 ${applicationNo}:`, err.message);
-    return { done: false, reason: err.message };
   }
+
+  if (approved > 0) {
+    console.log(`[审批联动] 已自动通过审批: ${applicationNo}（${approved}/${tasks.length} 个任务）`);
+    return { done: true, approved };
+  }
+  return { done: false, reason: lastReason || '审批任务同意失败' };
 }
 
 module.exports = {

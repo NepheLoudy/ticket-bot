@@ -7,7 +7,7 @@ const {
   buildTicketOpenCard,
   buildTicketAssignCard,
 } = require('../feishu/bot');
-const { formatFieldValue, formatFieldText } = require('../utils/fields');
+const { formatFieldValue, formatFieldText, getCreatedTime } = require('../utils/fields');
 const { resolvePersonGroups, buildPersonFieldsByGroups } = require('../utils/personFields');
 
 // ============================================================
@@ -36,15 +36,197 @@ const broadcastedRecords = new Set();
 // 播报触发节点：审批节点命中任一值时触发播报
 //   - 群内有组员接单后通过：未指定负责人工单的审批节点
 //   - 负责人确认消息后通过：指定负责人工单的审批节点
-const ACTIVATION_NODE_VALUES = new Set(config.approvalNode.acceptValues);
-
+// 匹配走 config.matchNodeValue：按组别并行的审批流会把多个分支节点名以「；」
+// 拼接写入同一字段（多组别工单），整串精确比对会对不上导致漏播报
 function isActivationNode(node) {
-  return node !== null && node !== undefined && node !== '' && ACTIVATION_NODE_VALUES.has(String(node));
+  return config.matchNodeValue(node, config.approvalNode.acceptValues);
 }
 
-// 指定负责人工单的触发节点（「公示即绑定」只作用于该节点）
+/**
+ * 播报总开关：BROADCAST_ON 含「create」即开启播报。
+ * 历史语义：create（记录新建）与 update（节点进入触发值）两条事件路径共用此开关，
+ * 没有独立的 update 开关——两边都必须用本函数判断，别写裸 includes('create')
+ */
+function isBroadcastEnabled() {
+  return config.broadcast.on.includes('create');
+}
+
+// ============================================================
+// 多人接单（无指定负责人工单，config.multiAccept）
+// 「是否允许多人接单」=是：首人接单不即时通过审批，开启工单级续接窗口
+// （面向多组别共享同一计时器）；窗口内再有人接单 → 合并补充负责人、
+// 在已有人接单的群发续接询问并重置计时（"再次播报再来6小时"）；
+// 到期无人续接 → 自动通过全部触发节点审批。
+// 窗口截止写回源表字段（自动创建），跨重启恢复；到期检查挂在每分钟对账上。
+// ============================================================
+
+function isMultiAcceptTicket(fields) {
+  const { field, yesValue } = config.multiAccept;
+  if (!field) return false;
+  const raw = fields?.[field];
+  const value = Array.isArray(raw) ? String(raw[0] ?? '') : String(raw ?? '');
+  return value === yesValue;
+}
+
+let windowFieldReady = false;
+
+async function ensureWindowField() {
+  if (windowFieldReady || !config.multiAccept.windowField) return;
+  try {
+    await bitableApi.createField(
+      config.bitable.sourceAppToken,
+      config.bitable.sourceTableId,
+      config.multiAccept.windowField
+    );
+    console.log(`[多人接单] 已在源表创建窗口截止字段「${config.multiAccept.windowField}」`);
+  } catch (err) {
+    // 字段已存在等场景视作就绪；真正的写入失败会在 writeMultiWindowDeadline 日志暴露
+  }
+  windowFieldReady = true;
+}
+
+async function writeMultiWindowDeadline(recordId, ts) {
+  const field = config.multiAccept.windowField;
+  if (!field) return;
+  await ensureWindowField();
+  try {
+    await bitableApi.updateRecord(
+      config.bitable.sourceAppToken,
+      config.bitable.sourceTableId,
+      recordId,
+      { [field]: ts }
+    );
+  } catch (err) {
+    console.error(`[多人接单] 写窗口截止失败 ${recordId}:`, err.message);
+  }
+}
+
+function formatMultiNames(acceptors) {
+  return (acceptors || []).map((p) => p?.name || p?.id).filter(Boolean).join('、');
+}
+
+/**
+ * 多人单通知目标群：已有人接单的群（各接单人组别映射到播报群）∪ 本次接单发生的群。
+ * 「询问是否有人继续」只发这些群，不广播到工单全部面向组别
+ */
+async function collectMultiNoticeTargets(fields, acceptors, extraChatId) {
+  const chatIds = new Set(extraChatId ? [extraChatId] : []);
+  const routeGroups = config.broadcast.routeField ? fields[config.broadcast.routeField] : null;
+  for (const person of acceptors || []) {
+    if (!person?.id) continue;
+    const groups = await resolvePersonGroups(routeGroups, person);
+    for (const group of groups) {
+      const route = config.broadcast.routes.find((r) => r.value === group);
+      if (route?.chatId) chatIds.add(route.chatId);
+    }
+  }
+  return [...chatIds].map((id) => config.broadcast.routes.find((r) => r.chatId === id) || { chatId: id });
+}
+
+function buildMultiAcceptCard({ title, acceptors, windowUntil }) {
+  const deadline = new Date(windowUntil).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false });
+  return {
+    config: { wide_screen_mode: true },
+    elements: [
+      { tag: 'markdown', content: `**${title}**` },
+      { tag: 'markdown', content: `👥 本工单**允许多人接单**，当前已接单 ${acceptors.length} 人：${formatMultiNames(acceptors) || '（未知）'}` },
+      { tag: 'markdown', content: `⏳ 开放续接至 **${deadline}**，期间在群内 **@${config.bot.name}** 发送「接单」即可加入；到期未再有人接单，审批将自动通过` },
+    ],
+    header: { template: 'blue', title: { content: '👥 多人接单进行中', tag: 'plain_text' } },
+  };
+}
+
+function buildMultiAcceptClosedCard({ title, acceptors }) {
+  return {
+    config: { wide_screen_mode: true },
+    elements: [
+      { tag: 'markdown', content: `**${title}**` },
+      { tag: 'markdown', content: `⏰ 多人接单窗口已结束，共 ${acceptors.length} 人接单：${formatMultiNames(acceptors) || '（无）'}` },
+      { tag: 'markdown', content: `✅ 审批已自动通过，感谢各位接力` },
+    ],
+    header: { template: 'green', title: { content: '✅ 多人接单结束', tag: 'plain_text' } },
+  };
+}
+
+async function sendCardToTargets(targets, card) {
+  for (const target of targets) {
+    try {
+      await sendCardToTarget(target, card);
+    } catch (err) {
+      console.error(`[多人接单] 通知 ${describeTarget(target)} 失败:`, err.message);
+    }
+  }
+}
+
+// 窗口到期/接单后审批补通过的尝试节流（recordId -> lastAttemptTs，1h 淘汰）
+const multiApproveAttempts = new Map();
+
+/**
+ * 每分钟对账挂载的审批联动补偿：
+ *   - 多人单：窗口到期 → 自动通过全部触发节点任务，并在已接单的群发结束通告
+ *   - 非多人单（无指定负责人）：接单时的自动通过可能因审批任务未到达等失败，这里补通过
+ * 指定负责人工单不代通过（公示即绑定会写补充负责人，必须等本人确认）。
+ * @returns {Promise<'multi-closed'|'approved'|null>}
+ */
+async function maybeAutoApproveOnReconcile(record) {
+  const f = record.fields;
+  const nodeField = config.approvalNode.field;
+  const node = nodeField ? f[nodeField] : '';
+  if (!isActivationNode(node)) return null;
+
+  const supplement = config.assign.supplementField ? (f[config.assign.supplementField] || []) : [];
+  if (supplement.length === 0) return null; // 还没人接单，不涉及审批联动
+
+  const assignValue = config.assign.field ? f[config.assign.field] : '';
+  const assignee = config.assign.assigneeField ? (f[config.assign.assigneeField]?.[0] || null) : null;
+  const isSpec = assignValue === config.assign.yesValue && !!assignee?.id;
+  if (isSpec) return null;
+
+  pruneExpired(multiApproveAttempts, 60 * 60 * 1000);
+  const last = multiApproveAttempts.get(record.record_id);
+  if (last && Date.now() - last < 10 * 60 * 1000) return null;
+  multiApproveAttempts.set(record.record_id, Date.now());
+
+  const { autoApproveForTicket } = require('./approvalLinkService');
+
+  if (isMultiAcceptTicket(f)) {
+    const deadlineTs = Number(f[config.multiAccept.windowField]) || 0;
+    if (!deadlineTs || Date.now() <= deadlineTs) return null; // 窗口未到期
+    const result = await autoApproveForTicket(
+      record,
+      '',
+      '多人单',
+      `多人接单窗口结束（共 ${supplement.length} 人：${formatMultiNames(supplement)}），自动通过`
+    );
+    if (!result.done) {
+      console.log(`[多人接单] 窗口到期自动通过未完成（下轮重试）: ${result.reason || ''}`);
+      return null;
+    }
+    const targets = await collectMultiNoticeTargets(f, supplement, null);
+    await sendCardToTargets(targets, buildMultiAcceptClosedCard({
+      title: getTicketTitle(f, record.record_id),
+      acceptors: supplement,
+    }));
+    console.log(`[多人接单] 窗口结束，审批已自动通过并通知 ${targets.length} 个群: ${record.record_id}`);
+    return 'multi-closed';
+  }
+
+  const result = await autoApproveForTicket(
+    record,
+    '（对账补偿）',
+    '组员',
+    '接单人已在群内确认接单，审批自动通过（对账补偿）'
+  );
+  if (result.done) {
+    console.log(`[对账] 接单后审批补通过: ${record.record_id}`);
+    return 'approved';
+  }
+  return null;
+}
+
+// 指定负责人工单的触发节点（「公示即绑定」只作用于该节点；同样走拆段匹配）
 function isAssignAcceptNode(node) {
-  return node !== null && node !== undefined && String(node) === config.approvalNode.assignAcceptValue;
+  return config.matchNodeValue(node, [config.approvalNode.assignAcceptValue]);
 }
 
 // 待接单工单映射：chat_id → [{ recordId, sourceRecordId, title, expectedAssigneeId }]
@@ -192,13 +374,13 @@ async function handleRecordCreate(recordId, fields) {
 
   // 2. 审批节点进入触发值时播报（新建时已处于触发节点也直接播报）
   let broadcastResult = { broadcast: 0 };
-  if (config.broadcast.on.includes('create')) {
+  if (isBroadcastEnabled()) {
     const nodeField = config.approvalNode.field;
     const node = nodeField ? record.fields[nodeField] : '';
     if (isActivationNode(node)) {
       broadcastResult = await broadcastTicket(record, 'create');
     } else {
-      console.log(`[工单事件] 创建时审批节点为「${node}」，暂不播报（等待进入「${[...ACTIVATION_NODE_VALUES].join('」/「')}」）`);
+      console.log(`[工单事件] 创建时审批节点为「${node}」，暂不播报（等待进入「${config.approvalNode.acceptValues.join('」/「')}」）`);
     }
   }
 
@@ -392,6 +574,8 @@ async function reconcileBroadcasts() {
   let broadcast = 0;
   let synced = 0;
   let bound = 0;
+  let multiClosed = 0;
+  let reapproved = 0;
   let skipped = 0;
 
   for (const record of all) {
@@ -407,6 +591,18 @@ async function reconcileBroadcasts() {
       if (syncResult) synced++;
     } catch (err) {
       console.error(`[对账] 补搬运失败 ${record.record_id}:`, err.message);
+    }
+
+    // 接单后审批联动补偿：多人单窗口到期自动通过（+结束通告）、
+    // 非多人单接单时通过失败的补通过（指定负责人工单不代通过）
+    if (inAcceptNode) {
+      try {
+        const approved = await maybeAutoApproveOnReconcile(record);
+        if (approved === 'multi-closed') multiClosed++;
+        else if (approved === 'approved') reapproved++;
+      } catch (err) {
+        console.error(`[对账] 接单审批联动处理失败 ${record.record_id}:`, err.message);
+      }
     }
 
     // 补播报/补绑定（仅触发节点；回执单节点不播报）
@@ -440,10 +636,10 @@ async function reconcileBroadcasts() {
     }
   }
 
-  console.log(`[对账] 扫描 ${all.length} 条，补播 ${broadcast}，补搬运 ${synced}，补绑定 ${bound}，跳过 ${skipped}`);
-  pushHistory({ type: 'reconcile', checked: all.length, broadcast, synced, bound, skipped });
+  console.log(`[对账] 扫描 ${all.length} 条，补播 ${broadcast}，补搬运 ${synced}，补绑定 ${bound}，多人单窗口关闭 ${multiClosed}，审批补通过 ${reapproved}，跳过 ${skipped}`);
+  pushHistory({ type: 'reconcile', checked: all.length, broadcast, synced, bound, multiClosed, reapproved, skipped });
 
-  return { checked: all.length, broadcast, synced, bound, skipped };
+  return { checked: all.length, broadcast, synced, bound, multiClosed, reapproved, skipped };
 }
 
 /**
@@ -457,7 +653,7 @@ async function handleRecordUpdate(recordId, fields, oldFields) {
   const syncResult = await syncIfCategoryPresent(record, 'update');
 
   // 2. 审批节点进入触发值时触发播报（去重保证只播一次）
-  if (config.broadcast.on.includes('create')) {
+  if (isBroadcastEnabled()) {
     const nodeField = config.approvalNode.field;
     const node = nodeField ? record.fields[nodeField] : '';
     if (isActivationNode(node)) {
@@ -527,9 +723,12 @@ async function handleAcceptOrder(chatId, userId, userName, message) {
   }
 
   if (pendingList.length === 0) {
-    // 内存映射重启后清空：回退查询源表——触发节点/回执单节点 + 补充负责人为空 + 面向组别匹配该群的最新工单
-    // 注意一个群可承载多个组别（如电控/硬件共群），必须收集该 chatId 对应的全部组别，
-    // 只取第一个会导致第二组别的工单匹配不到、接单误判"无待接单工单"
+    // 内存映射重启后清空：回退查询源表——触发节点（等待接单/等待负责人确认）+ 面向组别匹配该群的工单。
+    // 注意两点：
+    //   1. 只收触发节点——回执单等已推进节点的工单不再入池，防止重启后有人再发「接单」
+    //      作用到已接单工单（重复回执卡、重写补充负责人、状态被重写 in_progress）；
+    //   2. 一个群可承载多个组别（如电控/硬件共群），必须收集该 chatId 对应的全部组别，
+    //      匹配到的所有候选都入列，授权检查会跳过不属于发送者的指定负责人工单
     const groupsOfChat = config.broadcast.routes
       .filter((r) => r.chatId === chatId)
       .map((r) => r.value)
@@ -541,25 +740,28 @@ async function handleAcceptOrder(chatId, userId, userName, message) {
           config.bitable.sourceTableId
         );
         const nodeField = config.approvalNode.field;
-        const closeValue = config.approvalNode.closeValue;
         const supplementField = config.assign.supplementField;
         const candidates = all
           .filter((r) => {
             const f = r.fields;
             const node = nodeField ? f[nodeField] : '';
-            if (!isActivationNode(node) && node !== closeValue) return false;
+            if (!isActivationNode(node)) return false;
             const sup = f[supplementField];
             if (sup && sup.length > 0) {
               // 指定即绑定：补充负责人 == 指定负责人 视为「已绑定未确认」，仍可由本人确认
               const assignee = config.assign.assigneeField ? (f[config.assign.assigneeField]?.[0] || null) : null;
-              if (!(assignee?.id && sup.length === 1 && sup[0]?.id === assignee.id)) return false;
+              const boundSpec = !!(assignee?.id && sup.length === 1 && sup[0]?.id === assignee.id);
+              // 多人单（无指定负责人）：续接窗口期内补充负责人已有人也继续开放接单
+              const assignValue = config.assign.field ? f[config.assign.field] : '';
+              const isSpec = assignValue === config.assign.yesValue && !!assignee?.id;
+              if (!boundSpec && !(isMultiAcceptTicket(f) && !isSpec)) return false;
             }
             return true;
           })
-          .sort((a, b) => ((b.fields['发起时间'] || 0)) - ((a.fields['发起时间'] || 0)));
+          .sort((a, b) => (getCreatedTime(b.fields) || 0) - (getCreatedTime(a.fields) || 0));
 
-        // 首选：面向组别覆盖该群的工单（一个群可承载多个组别，如电控/硬件共群）
-        let matched = candidates.find((r) => {
+        // 首选：面向组别覆盖该群的工单（可多条，全部入列）
+        const groupMatched = candidates.filter((r) => {
           const groups = r.fields[config.broadcast.routeField];
           const groupList = Array.isArray(groups) ? groups.map(String) : groups ? [String(groups)] : [];
           return groupList.some((g) => groupsOfChat.includes(g));
@@ -567,32 +769,38 @@ async function handleAcceptOrder(chatId, userId, userName, message) {
 
         // 补充：指定负责人工单的播报群来自「负责人组别解析」（USER_GROUPS → 通讯录），
         // 可能不在工单「面向组别」里——按负责人所属组别与该群组别求交集匹配
-        if (!matched) {
+        let specMatched = [];
+        if (groupMatched.length === 0) {
           for (const r of candidates) {
             const assignee = config.assign.assigneeField ? (r.fields[config.assign.assigneeField]?.[0] || null) : null;
             if (!assignee?.id) continue;
             const routeGroups = config.broadcast.routeField ? r.fields[config.broadcast.routeField] : null;
             const groups = await resolvePersonGroups(routeGroups, assignee);
             if (groups.some((g) => groupsOfChat.includes(g))) {
-              matched = r;
-              break;
+              specMatched.push(r);
             }
           }
         }
 
-        const latest = matched;
-        if (latest) {
-          const assigneeId = config.assign.assigneeField
-            ? (latest.fields[config.assign.assigneeField]?.[0]?.id || null)
-            : null;
-          pendingList.push({
-            recordId: latest.record_id,
-            sourceRecordId: latest.record_id,
-            title: getTicketTitle(latest.fields, latest.record_id),
-            expectedAssigneeId: assigneeId,
-            time: Date.now(),
+        // 升序入列（接单匹配从队尾取最新）；多条候选同时入列后，
+        // 发送者不可接的指定负责人工单会被授权检查跳过，落到其可接的工单上
+        const matchedList = groupMatched.length > 0 ? groupMatched : specMatched;
+        matchedList
+          .sort((a, b) => (getCreatedTime(a.fields) || 0) - (getCreatedTime(b.fields) || 0))
+          .forEach((r) => {
+            const assigneeId = config.assign.assigneeField
+              ? (r.fields[config.assign.assigneeField]?.[0]?.id || null)
+              : null;
+            pendingList.push({
+              recordId: r.record_id,
+              sourceRecordId: r.record_id,
+              title: getTicketTitle(r.fields, r.record_id),
+              expectedAssigneeId: assigneeId,
+              time: Date.now(),
+            });
           });
-          console.log(`[接单确认] 内存映射为空，已回退匹配到工单: ${pendingList[0].title} (${pendingList[0].recordId})`);
+        if (matchedList.length > 0) {
+          console.log(`[接单确认] 内存映射为空，已回退匹配到 ${matchedList.length} 条待接单工单（最新: ${pendingList[pendingList.length - 1].title}）`);
         }
       } catch (err) {
         console.error(`[接单确认] 回退查询待接单工单失败:`, err.message);
@@ -646,17 +854,24 @@ async function handleAcceptOrder(chatId, userId, userName, message) {
     await syncService.updateProjectStatus(sourceRecordId, 'in_progress');
     console.log(`[接单确认] 项目状态更新为 in_progress`);
 
-    // 2.5 写入「补充负责人」字段（接单人，尽力而为）
+    // 2.5 写入「补充负责人」字段：合并写入（多人单窗口期内会陆续多人接单，不能覆盖）
     const supplementField = config.assign.supplementField;
+    let acceptors = [];
     if (supplementField) {
       try {
+        const existing = Array.isArray(fresh.fields[supplementField])
+          ? fresh.fields[supplementField].filter((p) => p?.id)
+          : [];
+        acceptors = existing.some((p) => p.id === userId)
+          ? existing
+          : [...existing, { id: userId, name: userName }];
         await bitableApi.updateRecord(
           config.bitable.sourceAppToken,
           config.bitable.sourceTableId,
           sourceRecordId,
-          { [supplementField]: [{ id: userId }] }
+          { [supplementField]: acceptors.map((p) => ({ id: p.id })) }
         );
-        console.log(`[接单确认] 已写入补充负责人: ${userName}(${userId})`);
+        console.log(`[接单确认] 已合并写入补充负责人: ${formatMultiNames(acceptors)}`);
       } catch (supplementErr) {
         console.error(`[接单确认] 写入补充负责人失败:`, supplementErr.message);
       }
@@ -712,18 +927,35 @@ async function handleAcceptOrder(chatId, userId, userName, message) {
       await sendCardToTarget(target, confirmCard);
     }
 
-    // 5. 审批联动：自动通过对应触发节点（未指定负责人→「群内有组员接单后通过」；
-    //    指定负责人→「负责人确认消息后通过」，仅本人确认会走到这里；尽力而为，不影响接单结果）
-    try {
-      const { autoApproveForTicket } = require('./approvalLinkService');
-      const approveResult = await autoApproveForTicket(fresh, userName, role);
-      if (approveResult.done) {
-        console.log('[接单确认] 审批联动: 已自动通过审批节点');
-      } else if (approveResult.reason) {
-        console.log(`[接单确认] 审批联动未执行: ${approveResult.reason}`);
+    // 5. 审批联动 / 多人接单分支：
+    //    - 多人单（无指定负责人 + 「是否允许多人接单」=是）：不即时通过审批；
+    //      写窗口截止（now + N 小时，窗口内再有人接单会重新计时），
+    //      并在已有人接单的群（含本次接单群）发续接询问；到期由每分钟对账自动通过
+    //    - 其余（含指定负责人、未开多人的普通单）：接单即自动通过全部并行触发节点任务
+    //      （尽力而为，不影响接单结果；失败由对账补偿）
+    if (!isAssignTicket && isMultiAcceptTicket(fresh.fields)) {
+      try {
+        const windowUntil = Date.now() + config.multiAccept.windowHours * 60 * 60 * 1000;
+        await writeMultiWindowDeadline(sourceRecordId, windowUntil);
+        const targets = await collectMultiNoticeTargets(fresh.fields, acceptors, chatId);
+        await sendCardToTargets(targets, buildMultiAcceptCard({ title, acceptors, windowUntil }));
+        const deadlineText = new Date(windowUntil).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false });
+        console.log(`[接单确认] 多人单续接窗口开启至 ${deadlineText}，已通知 ${targets.length} 个群`);
+      } catch (err) {
+        console.warn('[接单确认] 多人单续接通知失败(不影响接单):', err.message);
       }
-    } catch (err) {
-      console.warn('[接单确认] 审批联动失败(不影响接单):', err.message);
+    } else {
+      try {
+        const { autoApproveForTicket } = require('./approvalLinkService');
+        const approveResult = await autoApproveForTicket(fresh, userName, role);
+        if (approveResult.done) {
+          console.log('[接单确认] 审批联动: 已自动通过审批节点');
+        } else if (approveResult.reason) {
+          console.log(`[接单确认] 审批联动未执行: ${approveResult.reason}`);
+        }
+      } catch (err) {
+        console.warn('[接单确认] 审批联动失败(不影响接单):', err.message);
+      }
     }
 
     pushHistory({ type: 'accept', recordId, userId, userName, title });
@@ -759,7 +991,7 @@ async function handleAssigneeDmConfirm(userId, userName) {
       const sup = config.assign.supplementField ? f[config.assign.supplementField] : null;
       return !!sup?.some((p) => p?.id === userId); // 已绑定未确认
     })
-    .sort((a, b) => ((b.fields['发起时间'] || 0)) - ((a.fields['发起时间'] || 0)));
+    .sort((a, b) => (getCreatedTime(b.fields) || 0) - (getCreatedTime(a.fields) || 0));
 
   const latest = candidates[0];
   if (!latest) return { success: false, reason: 'no-pending' };

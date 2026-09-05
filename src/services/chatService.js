@@ -70,6 +70,21 @@ function isSelfMention(data) {
 }
 
 /**
+ * 接单确认文本匹配：
+ * - 网关按「含接单且 @机器人 / p2p 含接单」宽口径路由，本服务只认去空白后
+ *   全等的「接单 / 确认接单」，避免「还没人接单吗」「我不想接单」这类消息
+ *   被误当成接单确认（误触发会写补充负责人、推进状态并自动通过审批）
+ */
+function isAcceptRelatedText(text) {
+  return (text || '').replace(/\s+/g, '').includes('接单');
+}
+
+function isExactAcceptText(text) {
+  const t = (text || '').replace(/\s+/g, '');
+  return t === '接单' || t === '确认接单';
+}
+
+/**
  * 处理收到的聊天消息事件（网关转发的 im.message.receive_v1）
  * 两条路径：接单确认（@对话型 + 「接单」）与 /ticket-* 指令
  */
@@ -98,7 +113,12 @@ async function processChatMessage(data) {
   }
 
   // 接单确认：群内 @对话型机器人 发送「接单」（网关把含「接单」且 @机器人 的消息秒级路由到本项目）
-  if (chatType === 'group' && text.includes('接单') && isSelfMention(data)) {
+  if (chatType === 'group' && isAcceptRelatedText(text) && isSelfMention(data)) {
+    if (!isExactAcceptText(text)) {
+      console.log(`[聊天服务] 含「接单」但非精确指令，提示后忽略: ${userName || userId} 在群 ${chatId}`);
+      await sendTextToChat(chatId, '💡 接单确认请单独发送「接单」两个字，刚才的消息不会触发接单');
+      return;
+    }
     console.log(`[聊天服务] 收到接单确认: ${userName || userId} 在群 ${chatId}`);
     const result = await ticketService.handleAcceptOrder(chatId, userId, userName, text);
     if (!result?.success && result?.reason) {
@@ -108,7 +128,12 @@ async function processChatMessage(data) {
   }
 
   // 指定负责人的私聊确认：负责人在 24h 追问私信中回复「接单」（网关按 p2p+接单 路由到本服务）
-  if (chatType !== 'group' && !text.startsWith('/') && text.includes('接单')) {
+  if (chatType !== 'group' && !text.startsWith('/') && isAcceptRelatedText(text)) {
+    if (!isExactAcceptText(text)) {
+      console.log(`[聊天服务] 私聊含「接单」但非精确指令，提示后忽略: ${userName || userId}`);
+      await sendTextToUser(userId, '💡 如需确认接单，请直接回复「接单」两个字，刚才的消息不会触发确认');
+      return;
+    }
     console.log(`[聊天服务] 收到私聊接单确认: ${userName || userId}`);
     const result = await ticketService.handleAssigneeDmConfirm(userId, userName);
     if (result?.success) {

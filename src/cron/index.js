@@ -13,6 +13,10 @@ const {
 const { formatFieldValue, formatFieldText } = require('../utils/fields');
 const { getTicketApprovalUrl } = require('../feishu/bot');
 
+// 审批流原生字段名（审批表侧概念，无对应 env 配置；审批表改名需同步这里）
+const FIELD_HANDLER = '当前处理人';
+const FIELD_INITIATOR = '发起人';
+
 const broadcastHistory = [];
 
 const RETRY_CONFIG = {
@@ -137,15 +141,16 @@ async function runSummaryWithRetry() {
 async function checkTimeoutTickets() {
   console.log('[超时检查] 开始检查超时工单...');
 
-  // 查询审批节点处于任一触发节点的工单（未指定负责人/指定负责人两种审批流）
-  const filter = `OR(${config.approvalNode.acceptValues
-    .map((v) => `CurrentValue.[${config.approvalNode.field}] = "${v}"`)
-    .join(', ')})`;
-  const records = await bitableApi.listAllRecords(
+  // 查询审批节点处于任一触发节点的工单（未指定负责人/指定负责人两种审批流）。
+  // 全量拉取后本地过滤：节点字段值可能是并行分支多段拼接（「；」分隔），
+  // 服务端等值过滤对不上，统一用 config.matchNodeValue 拆段匹配
+  const records = (await bitableApi.listAllRecords(
     config.bitable.sourceAppToken,
-    config.bitable.sourceTableId,
-    filter
-  );
+    config.bitable.sourceTableId
+  )).filter((r) => config.matchNodeValue(
+    config.approvalNode.field ? r.fields[config.approvalNode.field] : '',
+    config.approvalNode.acceptValues
+  ));
 
   console.log(`[超时检查] 找到 ${records.length} 条处于触发节点（${config.approvalNode.acceptValues.join('，')}）的工单`);
 
@@ -156,18 +161,20 @@ async function checkTimeoutTickets() {
   for (const record of records) {
     const fields = record.fields;
 
-    // 已有人接单（补充负责人非空）→ 不再超时重问询
-    const supplement = fields['补充负责人'];
+    // 已有人接单（补充负责人非空）→ 不再超时重问询。
+    // 注意：指定负责人工单播报即绑定（补充负责人=指定负责人），绑定成功的天然被跳过，
+    // 本检查实际只覆盖「公示后无人响应/绑定失败」的工单
+    const supplement = fields[config.assign.supplementField];
     if (supplement && supplement.length > 0) continue;
 
     // 检查当前处理人是否有值
-    const currentHandler = fields['当前处理人']?.[0];
+    const currentHandler = fields[FIELD_HANDLER]?.[0];
     if (!currentHandler || !currentHandler.id) {
       continue;
     }
 
-    // 检查发起时间
-    const createTime = fields['创建时间'] || fields['发起时间'] || fields['Created Time'];
+    // 检查发起时间（发起时间缺失回退创建时间）
+    const createTime = fields['发起时间'] || fields['创建时间'];
     if (!createTime) {
       console.warn(`[超时检查] 工单 ${record.record_id} 缺少发起时间字段，跳过`);
       continue;
@@ -188,9 +195,9 @@ async function checkTimeoutTickets() {
     timeoutRecords.push({
       record: record,
       currentHandler,
-      initiator: fields['发起人']?.[0] || null,
-      assignValue: fields['是否指定人员负责'],
-      groups: fields['面向组别'] || [],
+      initiator: fields[FIELD_INITIATOR]?.[0] || null,
+      assignValue: config.assign.field ? fields[config.assign.field] : '',
+      groups: config.broadcast.routeField ? (fields[config.broadcast.routeField] || []) : [],
       elapsedHours: Math.floor(elapsed / (60 * 60 * 1000)),
     });
   }
@@ -210,14 +217,17 @@ async function handleTimeoutTicket(ticketInfo) {
   console.log(`[超时处理] 工单 ${recordId}: 当前处理人=${currentHandler.name}, 发起人=${initiator?.name || '未知'}, 超时=${elapsedHours}小时`);
 
   // 分支1：当前处理人 == 发起人
+  // 此时工单多半还没人接单（候选工单处于触发节点且无补充负责人），
+  // 文案按「无人接单」提示发起人，而不是误导其去「结单」
   if (initiator && currentHandler.id === initiator.id) {
-    console.log(`[超时处理] 分支1: 当前处理人==发起人，私信询问是否结单`);
+    console.log(`[超时处理] 分支1: 当前处理人==发起人，私信询问工单是否仍需要`);
 
     try {
       await sendTextToUser(
         currentHandler.id,
-        `📋 您的工单「${title}」已超时 ${elapsedHours} 小时未结单\n\n` +
-        `请前往审批界面完成结单：\n` +
+        `📋 您发起的工单「${title}」已超过 ${elapsedHours} 小时无人接单\n\n` +
+        `如仍需要处理，请留意对应工单群并联系组内同学响应；\n` +
+        `如不再需要，请前往审批界面撤回或结单：\n` +
         `${getTicketApprovalUrl(record.fields, recordId)}\n\n` +
         `如有疑问请联系管理员。`
       );
@@ -241,15 +251,18 @@ async function handleTimeoutTicket(ticketInfo) {
   // 分支2：当前处理人 != 发起人
   console.log(`[超时处理] 分支2: 当前处理人!=发起人`);
 
-  // 2.1 有指定负责人：私信当前处理人
-  if (assignValue === '是') {
+  // 2.1 有指定负责人：私信当前处理人。
+  // 该分支只在「绑定失败/未绑定」的指定负责人工单上触达（绑定成功的已被补充负责人检查跳过），
+  // 引导先完成接单确认而不是去结单
+  if (assignValue === config.assign.yesValue) {
     console.log(`[超时处理] 2.1: 有指定负责人，私信当前处理人`);
 
     try {
       await sendTextToUser(
         currentHandler.id,
-        `📋 您负责的工单「${title}」已超时 ${elapsedHours} 小时未结单\n\n` +
-        `请尽快处理并前往审批界面完成结单：\n` +
+        `📋 工单「${title}」已指定负责人，超过 ${elapsedHours} 小时未确认接单\n\n` +
+        `若该工单由您负责，请在工单群 @${config.bot.name} 发送「接单」完成确认（或私聊本机器人回复「接单」）；\n` +
+        `确认后请尽快处理：\n` +
         `${getTicketApprovalUrl(record.fields, recordId)}\n\n` +
         `如有疑问请联系发起人或管理员。`
       );
@@ -330,7 +343,7 @@ async function checkClosingTickets() {
 
   for (const record of records) {
     const fields = record.fields;
-    const handler = fields['当前处理人']?.[0];
+    const handler = fields[FIELD_HANDLER]?.[0];
     if (!handler || !handler.id) continue;
 
     const deadline = fields[config.closeReminder.deadlineField];
@@ -342,7 +355,7 @@ async function checkClosingTickets() {
     // 进入提醒窗口：理想结单时间过后 N 天（CLOSE_REMINDER_LEAD_DAYS）才开始提醒
     if (now < deadlineTs + leadMs) continue;
 
-    dueRecords.push({ record, handler, groups: fields['面向组别'] || [], deadlineTs });
+    dueRecords.push({ record, handler, groups: config.broadcast.routeField ? (fields[config.broadcast.routeField] || []) : [], deadlineTs });
   }
 
   console.log(`[结单提醒] 发现 ${dueRecords.length} 条已过结单时间的工单`);

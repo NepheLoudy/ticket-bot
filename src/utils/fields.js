@@ -98,9 +98,18 @@ function normalizeForWrite(value) {
   return value;
 }
 
+/**
+ * 工单发起时间（毫秒）：优先「发起时间」，缺失回退「创建时间」，都没有返回 0。
+ * 播报排序/超时判断统一走这里，避免两处字段名不一致导致排序口径漂移
+ */
+function getCreatedTime(fields) {
+  return fields?.['发起时间'] || fields?.['创建时间'] || 0;
+}
+
 module.exports = {
   formatFieldValue,
   formatFieldText,
   toDateOnlyTimestamp,
   normalizeForWrite,
+  getCreatedTime,
 };

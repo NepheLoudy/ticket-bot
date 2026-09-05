@@ -154,6 +154,19 @@ const config = {
     userGroups: parseUserGroups(process.env.USER_GROUPS),
   },
 
+  // 多人接单（无指定负责人工单）：工单表「是否允许多人接单」=是 时——
+  // 有人接单后不即时通过审批（合并写补充负责人），开放 N 小时续接窗口；
+  // 窗口内再有人接单 → 重置计时并在已有人接单的群发续接询问；
+  // 到期无人续接 → 由每分钟对账自动通过全部触发节点审批。
+  // 计时器为工单级（面向多组别共享同一窗口）；截止时间写回源表字段，跨重启恢复。
+  // 字段取值与「是否指定人员负责」同模式：审批表单字段需同步到工单多维表，缺列按「否」走现状
+  multiAccept: {
+    field: process.env.MULTI_ACCEPT_FIELD || '是否允许多人接单',
+    yesValue: process.env.MULTI_ACCEPT_YES_VALUE || '是',
+    windowHours: Number(process.env.MULTI_ACCEPT_WINDOW_HOURS || 6),
+    windowField: process.env.MULTI_ACCEPT_WINDOW_FIELD || '多人接单截止',
+  },
+
   // 审批节点监听（替代「申请状态」作为播报与超时判断依据）
   approvalNode: {
     field: process.env.APPROVAL_NODE_FIELD || '审批节点',
@@ -230,6 +243,27 @@ function getWatchedFieldNames() {
 }
 
 /**
+ * 审批节点字段值拆段：按组别并行的审批流会把同一层多个分支的节点名以
+ * 「；」等分隔符拼接写入同一字段（如「群内有组员接单后通过；群内有组员接单后通过；…」，
+ * 单组别工单则恰好是单个值），必须拆段后匹配，整串精确比对会对不上导致不播报/不联动
+ */
+function splitNodeValues(value) {
+  return String(value ?? '')
+    .split(/[;；,，、|]/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+/**
+ * 审批节点字段值是否命中目标节点集合（任一段命中即命中）
+ * @param {string|Array} value 审批节点字段原始值（可能为多段拼接）
+ * @param {string[]} targets 触发节点值集合
+ */
+function matchNodeValue(value, targets) {
+  return splitNodeValues(value).some((seg) => targets.includes(seg));
+}
+
+/**
  * 播报卡片展示字段：优先 DISPLAY_FIELDS，否则回退监听字段集合
  */
 function getDisplayFieldNames() {
@@ -242,4 +276,6 @@ module.exports = {
   ...config,
   getWatchedFieldNames,
   getDisplayFieldNames,
+  splitNodeValues,
+  matchNodeValue,
 };
