@@ -610,7 +610,8 @@ async function reconcileBroadcasts() {
     const f = record.fields;
     const node = nodeField ? f[nodeField] : '';
     const inAcceptNode = isActivationNode(node); // 等待接单/等待负责人确认
-    const inCloseNode = node === closeValue; // 负责人已确认接单（回执单）
+    // 拼接节点值拆段匹配：多组别工单的「回执单：是否结单」是并行分支多段拼接，整串比对永远不等
+    const inCloseNode = config.matchNodeValue(node, [closeValue]);
     if (!inAcceptNode && !inCloseNode) continue;
 
     // 补搬运/状态推进（category 门控，与播报标记无关，upsert 幂等）

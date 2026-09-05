@@ -483,12 +483,16 @@ const closingRemindState = new Map(); // recordId -> { dmTime }
 async function checkClosingTickets() {
   console.log('[结单提醒] 开始检查已过结单时间的工单...');
 
-  const filter = `CurrentValue.[${config.approvalNode.field}] = "${config.approvalNode.closeValue}"`;
-  const records = await bitableApi.listAllRecords(
+  // 全量拉取后本地过滤：节点字段值可能是并行分支多段拼接（「；」等分隔符），
+  // 服务端等值过滤对不上会让多组别工单的结单提醒静默失效，
+  // 统一用 config.matchNodeValue 拆段匹配（与确认追问/unclosed 结单分桶同款整改）
+  const records = (await bitableApi.listAllRecords(
     config.bitable.sourceAppToken,
-    config.bitable.sourceTableId,
-    filter
-  );
+    config.bitable.sourceTableId
+  )).filter((r) => config.matchNodeValue(
+    config.approvalNode.field ? r.fields[config.approvalNode.field] : '',
+    [config.approvalNode.closeValue]
+  ));
 
   console.log(`[结单提醒] 找到 ${records.length} 条「${config.approvalNode.closeValue}」的工单`);
 
@@ -876,7 +880,7 @@ function getCronStatus() {
     closeReminder: {
       running: !!closeReminderTask,
       schedule: TIMEOUT_CONFIG.checkInterval,
-      config: `提前 ${config.closeReminder.leadDays} 天提醒结单`,
+      config: `理想结单时间过后 ${config.closeReminder.leadDays} 天提醒结单`,
     },
     assignNudge: {
       running: !!assignNudgeTask,
