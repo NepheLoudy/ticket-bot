@@ -13,6 +13,17 @@ const COMMANDS = {
 };
 
 /**
+ * 私聊指令白名单：sender open_id 与 p2p chat_id 任一命中即可
+ */
+function isP2pCommandAllowed(senderId, chatId) {
+  const allow = config.p2pCommandAllow;
+  return (
+    (!!senderId && allow.openIds.includes(senderId)) ||
+    (!!chatId && allow.chatIds.includes(chatId))
+  );
+}
+
+/**
  * 从消息事件中提取纯文本指令，去掉 @机器人 占位符
  */
 function extractText(data) {
@@ -59,6 +70,18 @@ async function processChatMessage(data) {
   const [cmd] = text.split(/\s+/);
   const handler = COMMANDS[cmd];
   if (!handler) return;
+
+  // 指令仅群内触发并回复到对应群；私聊指令仅白名单账号/会话可用（与 hub 同套规则）
+  const chatType = message.chat_type || message.chatMode || '';
+  if (chatType !== 'group' && !isP2pCommandAllowed(userId, chatId)) {
+    console.log(`[聊天服务] 拒绝私聊指令 ${cmd} - sender: ${userId || '未知'} chat_id: ${chatId}`);
+    if (chatId) {
+      await sendTextToChat(chatId, '⚠️ 工单指令仅支持在群聊中使用，私聊指令暂未开放');
+    } else if (userId) {
+      await sendTextToUser(userId, '⚠️ 工单指令仅支持在群聊中使用，私聊指令暂未开放');
+    }
+    return;
+  }
 
   let replyText;
   try {

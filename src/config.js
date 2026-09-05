@@ -199,6 +199,13 @@ const config = {
   // 忽略的群聊（其对话能力由其他项目机器人提供，如审批群归属 approval-bot）
   ignoreChatIds: parseListConfig(process.env.IGNORE_CHAT_IDS),
 
+  // 指令仅群内触发；私聊指令仅白名单内可用（open_id / p2p chat_id 任一命中即可）。
+  // 与对话型机器人（hub）同套规则同套环境变量；留空 = 所有人私聊指令均关闭。
+  p2pCommandAllow: {
+    openIds: parseListConfig(process.env.P2P_COMMAND_OPEN_IDS),
+    chatIds: parseListConfig(process.env.P2P_COMMAND_CHAT_IDS),
+  },
+
   cron: {
     schedule: process.env.CRON_SCHEDULE || '',
   },
