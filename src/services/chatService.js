@@ -44,6 +44,18 @@ function extractText(data) {
   return text.replace(/@_user_\d+/g, '').trim();
 }
 
+// 消息去重（网关重启窗口内飞书可能重复投递同一事件；@触发对话与接单回执由网关独占路由分立，
+// 本服务只处理工单域消息，此处兜底防同一条消息触发两次接单/回执）
+const processedMessages = new Map(); // message_id -> timestamp
+const MSG_DEDUP_TTL = 5 * 60 * 1000;
+
+function pruneProcessedMessages() {
+  const now = Date.now();
+  for (const [key, ts] of processedMessages) {
+    if (now - ts > MSG_DEDUP_TTL) processedMessages.delete(key);
+  }
+}
+
 /**
  * 严格判断 @ 的是本项目机器人（对话型本体），避免把 @ 其它机器人含「接单」的消息当接单
  * （网关的 mention 判定较宽，这里是本服务的二次校验）
@@ -65,6 +77,14 @@ async function processChatMessage(data) {
   const message = data?.message;
   if (!message) return;
 
+  pruneProcessedMessages();
+  const messageId = message.message_id;
+  if (messageId && processedMessages.has(messageId)) {
+    console.log(`[聊天服务] 重复消息跳过: ${messageId}`);
+    return;
+  }
+  if (messageId) processedMessages.set(messageId, Date.now());
+
   const text = extractText(data);
   const chatId = message.chat_id;
   const userId = data?.sender?.sender_id?.open_id;
@@ -83,6 +103,20 @@ async function processChatMessage(data) {
     const result = await ticketService.handleAcceptOrder(chatId, userId, userName, text);
     if (!result?.success && result?.reason) {
       await sendTextToChat(chatId, `⚠️ ${result.reason}`);
+    }
+    return;
+  }
+
+  // 指定负责人的私聊确认：负责人在 24h 追问私信中回复「接单」（网关按 p2p+接单 路由到本服务）
+  if (chatType !== 'group' && !text.startsWith('/') && text.includes('接单')) {
+    console.log(`[聊天服务] 收到私聊接单确认: ${userName || userId}`);
+    const result = await ticketService.handleAssigneeDmConfirm(userId, userName);
+    if (result?.success) {
+      await sendTextToUser(userId, `✅ 已确认接单：${result.title}`);
+    } else if (result?.reason === 'no-pending') {
+      await sendTextToUser(userId, '当前没有待你确认的指定负责人工单；如需接单请到对应工单群 @机器人 发送「接单」');
+    } else {
+      await sendTextToUser(userId, `⚠️ 确认未完成：${result?.reason || '未知原因'}`);
     }
     return;
   }

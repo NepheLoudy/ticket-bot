@@ -30,9 +30,15 @@ function getTicketTitle(fields, recordId) {
  * 未结单判定与 pm-robot ticketCloseService 对齐：
  * 审批节点处于「回执单：是否结单」且理想结单时间在 7 日内。
  *
- * 播报对象：指定负责人 → 补充负责人（两者都为空的工单不播，不回退到发起人）。
+ * 播报对象：指定负责人 → 补充负责人（两者都为空的工单不播，不回退到发起人/当前处理人）。
  * 分组依据：负责人的所属组别（USER_GROUPS → 通讯录部门 → 工单「面向组别」兜底），
  * 组别经播报路由映射为群 chatId；一张工单负责人横跨多组时会出现在多个群。
+ *
+ * 口径说明（勿当成 bug）：
+ * - 管理层/未匹配到播报群组别的工单不会出现在任何 DDL 分栏——管理层群只同步
+ *   工单发布与问询播报（GROUP_ROUTES），不作为 DDL 播报对象（hub 仅读四个播报群键）；
+ * - pm-robot 降级链路（ticket-bot 不可用时直读工单表）的负责人口径应与本章一致：
+ *   指定负责人 → 补充负责人，不取「当前处理人」（那是结单提醒的口径）。
  *
  * @returns {Promise<Object<{urgent: Array, week: Array}>>} 以群 chatId 为键
  */
@@ -92,7 +98,7 @@ async function getUnclosedByGroup() {
     const ticket = {
       recordId: record.record_id,
       title: getTicketTitle(fields, record.record_id),
-      handlerName: people[0].name || '未知',
+      handlerName: people.map((p) => p.name || '未知').join('、'),
       daysLeft,
       deadlineFormatted: deadlineTs.format('YYYY-MM-DD'),
     };

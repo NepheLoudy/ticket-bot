@@ -735,6 +735,47 @@ async function handleAcceptOrder(chatId, userId, userName, message) {
 }
 
 /**
+ * 指定负责人私聊确认：负责人在 24h 追问私信中回复「接单」→ 定位其「已绑定未确认」的
+ * 工单（节点仍在「负责人确认消息后通过」+ 补充负责人==本人），登记到公示群待接单映射，
+ * 复用群接单链路完成状态推进、群内回执与审批联动（本人校验仍由 handleAcceptOrder 把关）
+ * @param {string} userId 负责人 open_id
+ * @param {string} userName 负责人姓名
+ */
+async function handleAssigneeDmConfirm(userId, userName) {
+  if (!userId) return { success: false, reason: '无法识别发送者' };
+
+  const nodeField = config.approvalNode.field;
+  const all = await bitableApi.listAllRecords(
+    config.bitable.sourceAppToken,
+    config.bitable.sourceTableId
+  );
+  const candidates = all
+    .filter((r) => {
+      const f = r.fields;
+      const node = nodeField ? f[nodeField] : '';
+      if (!isAssignAcceptNode(node)) return false;
+      const assignee = config.assign.assigneeField ? (f[config.assign.assigneeField]?.[0] || null) : null;
+      if (assignee?.id !== userId) return false;
+      const sup = config.assign.supplementField ? f[config.assign.supplementField] : null;
+      return !!sup?.some((p) => p?.id === userId); // 已绑定未确认
+    })
+    .sort((a, b) => ((b.fields['发起时间'] || 0)) - ((a.fields['发起时间'] || 0)));
+
+  const latest = candidates[0];
+  if (!latest) return { success: false, reason: 'no-pending' };
+
+  const assignee = latest.fields[config.assign.assigneeField]?.[0] || null;
+  const routeGroups = config.broadcast.routeField ? latest.fields[config.broadcast.routeField] : null;
+  const groupNames = await resolvePersonGroups(routeGroups, assignee);
+  const chatId = collectTargets(groupNames).find((t) => t.chatId)?.chatId;
+  if (!chatId) return { success: false, reason: '未找到工单公示群，请在对应工单群 @机器人 发送「接单」' };
+
+  registerPendingOrders([{ chatId }], latest.record_id, getTicketTitle(latest.fields, latest.record_id), userId);
+  console.log(`[接单确认] 私聊确认命中工单: ${latest.record_id} → 公示群 ${chatId}`);
+  return handleAcceptOrder(chatId, userId, userName, '接单');
+}
+
+/**
  * 获取工单标题
  */
 function getTicketTitle(fields, recordId) {
@@ -789,6 +830,7 @@ module.exports = {
   handleRecordCreate,
   handleRecordUpdate,
   handleAcceptOrder,
+  handleAssigneeDmConfirm,
   rebroadcastRecord,
   reconcileBroadcasts,
   getAllTickets,

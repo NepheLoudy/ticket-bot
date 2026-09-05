@@ -187,6 +187,12 @@ const config = {
   // 组长映射（组别名:组长open_id或姓名）
   groupLeaders: parseGroupLeaders(process.env.GROUP_LEADERS),
 
+  // 指定负责人确认追问：公示即绑定后超过 N 小时未确认 → 私聊负责人追问，
+  // 负责人私聊回复「接单」或群内 @机器人 发送「接单」均可完成确认
+  assignNudge: {
+    hours: Number(process.env.ASSIGN_NUDGE_HOURS || 24),
+  },
+
   feishuEvent: {
     verificationToken: process.env.FEISHU_VERIFICATION_TOKEN || '',
     encryptKey: process.env.FEISHU_ENCRYPT_KEY || '',

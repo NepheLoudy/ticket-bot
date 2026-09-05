@@ -7,7 +7,7 @@ const { processChatMessage } = require('./services/chatService');
 const ticketService = require('./services/ticketService');
 const syncService = require('./services/syncService');
 const unclosedService = require('./services/unclosedService');
-const { startCronJobs, runSummary, getCronStatus, getSummaryHistory } = require('./cron');
+const { startCronJobs, runSummary, getCronStatus, getSummaryHistory, runAssigneeNudgeCheck } = require('./cron');
 
 const app = express();
 
@@ -145,6 +145,17 @@ app.post('/api/bot/rebroadcast', async (req, res) => {
     res.json({ success: true, result });
   } catch (err) {
     console.error('补播失败:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 手动触发指定负责人确认追问检查（超 24h 未确认私聊追问）
+app.post('/api/bot/test-nudge', async (req, res) => {
+  try {
+    const result = await runAssigneeNudgeCheck();
+    res.json({ success: true, result });
+  } catch (err) {
+    console.error('确认追问检查失败:', err);
     res.status(500).json({ error: err.message });
   }
 });

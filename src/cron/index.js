@@ -432,6 +432,105 @@ async function runCloseReminderCheck() {
   }
 }
 
+// ============================================================
+// 指定负责人确认追问（公示即绑定后超过 N 小时未确认 → 私聊追问）
+//   条件：节点仍在「负责人确认消息后通过」+ 已绑定（补充负责人==指定负责人）+
+//         距发起时间超过 ASSIGN_NUDGE_HOURS
+//   负责人私聊回复「接单」或群内 @机器人 发送「接单」均可完成确认
+//   （确认判定与审批联动统一走 ticketService，追问只负责提醒）
+// ============================================================
+const assignNudgeState = new Map(); // recordId -> lastNudgeTs
+
+async function checkUnconfirmedAssignedTickets() {
+  const { assignField, yesValue, assigneeField, supplementField } = config.assign;
+  const nodeField = config.approvalNode.field;
+  const assignNode = config.approvalNode.assignAcceptValue;
+
+  const filter = `CurrentValue.[${nodeField}] = "${assignNode}"`;
+  const records = await bitableApi.listAllRecords(
+    config.bitable.sourceAppToken,
+    config.bitable.sourceTableId,
+    filter
+  );
+
+  const now = Date.now();
+  const nudgeMs = config.assignNudge.hours * 60 * 60 * 1000;
+  const due = [];
+
+  for (const record of records) {
+    const fields = record.fields;
+    if (!assignField || fields[assignField] !== yesValue) continue;
+    const assignee = assigneeField ? fields[assigneeField]?.[0] : null;
+    if (!assignee?.id) continue;
+    const sup = supplementField ? fields[supplementField] : null;
+    if (!sup?.some((p) => p?.id === assignee.id)) continue; // 未绑定（对账会补绑定），不追问
+    const created = fields['发起时间'] || 0;
+    if (!created || now - created < nudgeMs) continue;
+    due.push({ record, assignee });
+  }
+
+  // 状态清理：追问记录 7 天后淘汰
+  for (const [key, ts] of assignNudgeState) {
+    if (now - ts > 7 * 24 * 60 * 60 * 1000) assignNudgeState.delete(key);
+  }
+
+  console.log(`[确认追问] 找到 ${due.length} 条超 ${config.assignNudge.hours} 小时未确认的指定负责人工单`);
+  return due;
+}
+
+async function handleAssigneeNudge({ record, assignee }) {
+  const recordId = record.record_id;
+  const title = formatFieldText(record.fields['申请编号']) || formatFieldValue(record.fields['需求1'] ?? record.fields['需求']) || `工单-${recordId.slice(-6)}`;
+
+  // 同一工单追问间隔不小于 ASSIGN_NUDGE_HOURS，避免每小时重复打扰
+  const last = assignNudgeState.get(recordId);
+  if (last && Date.now() - last < config.assignNudge.hours * 60 * 60 * 1000) {
+    return { nudged: false, note: '已追问过，间隔内跳过' };
+  }
+
+  try {
+    await sendTextToUser(
+      assignee.id,
+      `📋 工单「${title}」已指派给你并公示到你的组别群，超过 ${config.assignNudge.hours} 小时未收到你的接单确认。\n\n` +
+      `✅ 如已知悉：请在群内 @${config.bot.name} 发送「接单」，或直接私聊本机器人回复「接单」完成确认。\n` +
+      `❓ 如该工单不应由你负责，请联系管理员调整。`
+    );
+    assignNudgeState.set(recordId, Date.now());
+    broadcastHistory.unshift({ time: new Date().toISOString(), type: 'assignee_nudge', recordId, userId: assignee.id, success: true });
+    if (broadcastHistory.length > 50) broadcastHistory.length = 50;
+    console.log(`[确认追问] 已私聊负责人: ${assignee.name || ''}(${assignee.id}) ← ${recordId}`);
+    return { nudged: true };
+  } catch (err) {
+    console.error(`[确认追问] 私聊失败 ${recordId}:`, err.message);
+    return { nudged: false, error: err.message };
+  }
+}
+
+async function runAssigneeNudgeCheck() {
+  console.log('[确认追问] 开始执行指定负责人确认追问检查...');
+  try {
+    const due = await checkUnconfirmedAssignedTickets();
+    if (due.length === 0) return { checked: 0, nudged: 0 };
+
+    const results = [];
+    for (const item of due) {
+      try {
+        results.push({ recordId: item.record.record_id, ...(await handleAssigneeNudge(item)) });
+      } catch (err) {
+        console.error(`[确认追问] 处理工单 ${item.record.record_id} 失败:`, err.message);
+        results.push({ recordId: item.record.record_id, nudged: false, error: err.message });
+      }
+    }
+
+    const nudged = results.filter((r) => r.nudged).length;
+    console.log(`[确认追问] 完成: 检查=${due.length} 追问=${nudged}`);
+    return { checked: due.length, nudged, results };
+  } catch (err) {
+    console.error('[确认追问] 任务执行失败:', err.message);
+    throw err;
+  }
+}
+
 /**
  * 执行超时检查任务
  */
@@ -470,6 +569,7 @@ async function runTimeoutCheck() {
 let summaryTask = null;
 let timeoutTask = null;
 let closeReminderTask = null;
+let assignNudgeTask = null;
 let reconcileTask = null;
 
 function startCronJobs() {
@@ -528,6 +628,23 @@ function startCronJobs() {
 
   console.log(`[定时任务] 结单提醒已启动，调度规则: ${TIMEOUT_CONFIG.checkInterval} (Asia/Shanghai)`);
 
+  // 指定负责人确认追问任务（每小时执行一次）
+  if (assignNudgeTask) {
+    console.log('[定时任务] 确认追问任务已存在，先停止旧任务');
+    assignNudgeTask.stop();
+  }
+
+  assignNudgeTask = cron.schedule(TIMEOUT_CONFIG.checkInterval, () => {
+    console.log('[定时任务] 触发指定负责人确认追问检查');
+    runAssigneeNudgeCheck().catch(err => {
+      console.error('[定时任务] 确认追问检查失败:', err.message);
+    });
+  }, {
+    timezone: 'Asia/Shanghai',
+  });
+
+  console.log(`[定时任务] 确认追问已启动，调度规则: ${TIMEOUT_CONFIG.checkInterval} (Asia/Shanghai)`);
+
   // 播报对账任务（每分钟执行一次）
   // 长连接事件会被共用应用的其他连接随机抢走，对账兜底保证漏播工单最终补播/补搬运
   if (reconcileTask) {
@@ -566,6 +683,11 @@ function stopCronJobs() {
     closeReminderTask = null;
     console.log('[定时任务] 结单提醒已停止');
   }
+  if (assignNudgeTask) {
+    assignNudgeTask.stop();
+    assignNudgeTask = null;
+    console.log('[定时任务] 确认追问已停止');
+  }
   if (reconcileTask) {
     reconcileTask.stop();
     reconcileTask = null;
@@ -589,6 +711,11 @@ function getCronStatus() {
       schedule: TIMEOUT_CONFIG.checkInterval,
       config: `提前 ${config.closeReminder.leadDays} 天提醒结单`,
     },
+    assignNudge: {
+      running: !!assignNudgeTask,
+      schedule: TIMEOUT_CONFIG.checkInterval,
+      config: `指定负责人超 ${config.assignNudge.hours} 小时未确认时私聊追问`,
+    },
     reconcile: {
       running: !!reconcileTask,
       schedule: '* * * * *',
@@ -607,6 +734,7 @@ module.exports = {
   runSummary: runSummaryWithRetry,
   runTimeoutCheck,
   runCloseReminderCheck,
+  runAssigneeNudgeCheck,
   getCronStatus,
   getSummaryHistory,
   getSummaryTargets,
