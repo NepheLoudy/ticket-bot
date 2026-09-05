@@ -11,6 +11,7 @@ const {
 } = require('../feishu/bot');
 const { formatFieldValue, formatFieldText, getCreatedTime } = require('../utils/fields');
 const { getTicketApprovalUrl } = require('../feishu/bot');
+const quietHours = require('../utils/quietHours');
 
 // 审批流原生字段名（审批表侧概念，无对应 env 配置；审批表改名需同步这里）
 const FIELD_HANDLER = '当前处理人';
@@ -46,6 +47,43 @@ const TIMEOUT_LEADER_NUDGE = {
 };
 const timeoutRoundState = new Map(); // recordId -> { rounds, timestamp }
 const leaderNudgeState = new Map(); // recordId -> lastLeaderDmTs
+
+// ============================================================
+// 群内重问询节流（超时分支 2.2 专用）：公开问询从「每小时一次」改为
+// 「每 6 小时一次、每单封顶 2 次」（≈发起后 6h、12h 各问询一次）。
+// 封顶后群内不再重复问询，持续升级由「无人接单升级」的组长私聊承担。
+//   - 多人单不受限：有人接单即合并写入补充负责人、天然退出本检查；续接窗口的
+//     续接询问（ticketService 接单路径）与到期自动通过（对账路径）不经此处；
+//   - 计数在内存：重启清零，代价是封顶计数重新开始（最多多问两轮），不落表。
+// ============================================================
+const TIMEOUT_REASK = {
+  intervalMs: 6 * 60 * 60 * 1000,
+  maxCount: 2,
+  stateTtlMs: 48 * 60 * 60 * 1000,
+};
+const reaskState = new Map(); // recordId -> { count, lastTs }
+
+function pruneReaskState() {
+  const now = Date.now();
+  for (const [key, st] of reaskState) {
+    if (now - st.lastTs > TIMEOUT_REASK.stateTtlMs) reaskState.delete(key);
+  }
+}
+
+/** 本轮是否允许群内问询（未封顶且距上次 ≥6h），只读不写 */
+function reaskAllowed(recordId) {
+  pruneReaskState();
+  const st = reaskState.get(recordId);
+  if (st && st.count >= TIMEOUT_REASK.maxCount) return false;
+  if (st && st.lastTs && Date.now() - st.lastTs < TIMEOUT_REASK.intervalMs) return false;
+  return true;
+}
+
+/** 群内问询实际发出（至少一群成功）后占用一次额度 */
+function recordReask(recordId) {
+  const st = reaskState.get(recordId) || { count: 0, lastTs: 0 };
+  reaskState.set(recordId, { count: st.count + 1, lastTs: Date.now() });
+}
 
 function pruneStateMap(map, ttl) {
   const now = Date.now();
@@ -393,7 +431,12 @@ async function handleTimeoutTicket(ticketInfo) {
   }
 
   // 2.2 无指定负责人：重走公开问询流程，强调还没人接单，@组长
+  // 群内问询节流：每 6 小时一次、每单封顶 2 次；间隔未到或已达封顶则本轮跳过
   console.log(`[超时处理] 2.2: 无指定负责人，重走公开问询流程`);
+  if (!reaskAllowed(recordId)) {
+    console.log(`[超时处理] 2.2: 群内问询间隔未到或已达封顶（每 ${TIMEOUT_REASK.intervalMs / 3600000}h × ${TIMEOUT_REASK.maxCount} 次），本轮跳过`);
+    return { branch: 'skipped', success: false, note: '群内问询间隔未到或已达上限' };
+  }
 
   const targets = ticketService.collectTargets(groups);
   if (targets.length === 0) {
@@ -415,6 +458,9 @@ async function handleTimeoutTicket(ticketInfo) {
       results.push({ target: describeTarget(target), success: false, error: err.message });
     }
   }
+
+  // 至少一群发送成功才占用问询额度（全失败不消耗，下轮重试）
+  if (results.some(r => r.success)) recordReask(recordId);
 
   broadcastHistory.unshift({
     time: new Date().toISOString(),
@@ -682,7 +728,8 @@ function startCronJobs() {
 
     summaryTask = cron.schedule(config.cron.schedule, () => {
       console.log('[定时任务] 触发工单每日汇总');
-      runSummaryWithRetry().catch(err => {
+      // 晚间静默：窗口内积压到窗口结束整点，重跑整个汇总任务（以补发时刻数据为准）
+      quietHours.gateTask('daily_summary', quietHours.shanghaiStamp(), runSummaryWithRetry, '工单每日汇总').catch(err => {
         console.error('[定时任务] 工单每日汇总失败:', err.message);
       });
     }, {
@@ -701,6 +748,11 @@ function startCronJobs() {
   }
 
   timeoutTask = cron.schedule(TIMEOUT_CONFIG.checkInterval, () => {
+    // 晚间静默：整轮跳过（不计轮次/不写提醒状态），09:00 整点轮次天然完成补跑
+    if (quietHours.inQuietHours()) {
+      console.log(`[定时任务] 晚间静默（${quietHours.quietWindowDesc()}），超时检查本轮顺延至下个整点`);
+      return;
+    }
     console.log('[定时任务] 触发超时检查');
     runTimeoutCheck().catch(err => {
       console.error('[定时任务] 超时检查失败:', err.message);
@@ -718,6 +770,11 @@ function startCronJobs() {
   }
 
   closeReminderTask = cron.schedule(TIMEOUT_CONFIG.checkInterval, () => {
+    // 晚间静默：整轮跳过（不写私聊状态），09:00 整点轮次天然完成补跑
+    if (quietHours.inQuietHours()) {
+      console.log(`[定时任务] 晚间静默（${quietHours.quietWindowDesc()}），结单提醒本轮顺延至下个整点`);
+      return;
+    }
     console.log('[定时任务] 触发结单提醒检查');
     runCloseReminderCheck().catch(err => {
       console.error('[定时任务] 结单提醒检查失败:', err.message);
@@ -735,6 +792,11 @@ function startCronJobs() {
   }
 
   assignNudgeTask = cron.schedule(TIMEOUT_CONFIG.checkInterval, () => {
+    // 晚间静默：整轮跳过（不写追问节流状态），09:00 整点轮次天然完成补跑
+    if (quietHours.inQuietHours()) {
+      console.log(`[定时任务] 晚间静默（${quietHours.quietWindowDesc()}），确认追问本轮顺延至下个整点`);
+      return;
+    }
     console.log('[定时任务] 触发指定负责人确认追问检查');
     runAssigneeNudgeCheck().catch(err => {
       console.error('[定时任务] 确认追问检查失败:', err.message);
@@ -762,6 +824,11 @@ function startCronJobs() {
   });
 
   console.log('[定时任务] 播报对账已启动，调度规则: 每分钟 (Asia/Shanghai)');
+
+  // 晚间静默：注册积压任务的冲刷执行器，并按启动时点调度积压补跑（有积压才调度）
+  quietHours.registerTask('daily_summary', runSummaryWithRetry);
+  quietHours.initQuietHoursFlush();
+
   console.log(`[定时任务] 当前时间: ${new Date().toLocaleString('zh-CN')}`);
 
   return { summaryTask, timeoutTask, closeReminderTask, reconcileTask };
@@ -821,6 +888,7 @@ function getCronStatus() {
       schedule: '* * * * *',
       config: '每分钟扫描触发节点工单，漏播补播/漏搬补搬',
     },
+    quietHours: quietHours.getStatus(),
   };
 }
 

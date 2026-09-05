@@ -22,3 +22,6 @@ Thumbs.db
 .idea/
 *.swp
 *.swo
+
+# 晚间静默积压文件（运行时状态，勿提交）
+.quiet-backlog.json

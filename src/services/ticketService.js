@@ -9,6 +9,7 @@ const {
 } = require('../feishu/bot');
 const { formatFieldValue, formatFieldText, getCreatedTime } = require('../utils/fields');
 const { resolvePersonGroups, buildPersonFieldsByGroups } = require('../utils/personFields');
+const quietHours = require('../utils/quietHours');
 
 // ============================================================
 // 工单事件处理：
@@ -26,6 +27,7 @@ const { resolvePersonGroups, buildPersonFieldsByGroups } = require('../utils/per
 // ============================================================
 const NOTIFY_DEDUP_TTL = 10 * 60 * 1000;
 const recentCreateEvents = new Map(); // record_id -> timestamp
+const quietDeferredLogged = new Set(); // 静默顺延日志只打一次（实际播报成功后移除）
 
 // 播报历史（内存，供 API 查询）
 const broadcastHistory = [];
@@ -203,10 +205,17 @@ async function maybeAutoApproveOnReconcile(record) {
       return null;
     }
     const targets = await collectMultiNoticeTargets(f, supplement, null);
-    await sendCardToTargets(targets, buildMultiAcceptClosedCard({
+    const closedCard = buildMultiAcceptClosedCard({
       title: getTicketTitle(f, record.record_id),
       acceptors: supplement,
-    }));
+    });
+    // 晚间静默：结束通告是群播报，静默窗口内载荷落盘积压，窗口结束统一补发
+    // （审批自动通过本身不延迟，已在上面完成）
+    if (quietHours.gatePayload('card-to-targets', { targets, card: closedCard }, `多人单结束通告 ${record.record_id}`)) {
+      console.log(`[多人接单] 窗口结束，审批已自动通过；结束通告随晚间静默积压，目标 ${targets.length} 个群: ${record.record_id}`);
+      return 'multi-closed';
+    }
+    await sendCardToTargets(targets, closedCard);
     console.log(`[多人接单] 窗口结束，审批已自动通过并通知 ${targets.length} 个群: ${record.record_id}`);
     return 'multi-closed';
   }
@@ -394,9 +403,23 @@ async function handleRecordCreate(recordId, fields) {
  * 播报工单（按「是否指定人员负责」分支）
  * @param {object} record 源记录 { record_id, fields }
  * @param {string} scene 场景标识（create/publish）
+ * @param {{bypassQuiet?: boolean}} options bypassQuiet=true 跳过晚间静默
+ *        （仅人工单条补播用；静默窗口内顺延不播，09:00 后由对账自然补播）
  */
-async function broadcastTicket(record, scene) {
+async function broadcastTicket(record, scene, options = {}) {
   const recordId = record.record_id;
+
+  // 晚间静默：窗口内不发送也不做任何副作用（不写播报标记、不公示即绑定、
+  // 不登记待接单），记录保持「无标记」状态由每分钟对账在窗口结束后自然补播；
+  // 补播走 broadcastTicket 同一入口，播报前重查会兜住夜间已接单/节点推进的变化
+  if (!options.bypassQuiet && quietHours.inQuietHours()) {
+    if (!quietDeferredLogged.has(recordId)) {
+      quietDeferredLogged.add(recordId);
+      console.log(`[工单事件] 晚间静默（${quietHours.quietWindowDesc()}），工单 ${recordId} 播报顺延（对账将在窗口结束后补播）`);
+    }
+    return { broadcast: 0, note: 'quiet-deferred' };
+  }
+
   if (broadcastedRecords.has(recordId)) {
     console.log(`[工单事件] 工单 ${recordId} 已播报过，跳过重复播报`);
     return { broadcast: 0, note: '已播报过' };
@@ -473,6 +496,7 @@ async function broadcastTicket(record, scene) {
   let bindResult = null;
   if (results.some((r) => r.success)) {
     broadcastedRecords.add(recordId);
+    quietDeferredLogged.delete(recordId);
     await markBroadcast(recordId, scene);
 
     // 指定负责人工单「公示即绑定」：写补充负责人 + 看板人员字段（幂等）
@@ -545,6 +569,7 @@ async function bindAssignedTicket(record, scene) {
 
 /**
  * 手动补播指定工单（用于漏播修复，走同一去重集合保证幂等）
+ * 人工当下主动触发，跳过晚间静默立即发送
  * @param {string} recordId 源表记录 ID
  */
 async function rebroadcastRecord(recordId) {
@@ -553,7 +578,7 @@ async function rebroadcastRecord(recordId) {
   if (!isActivationNode(node)) {
     return { broadcast: 0, note: `审批节点「${node || '(空)'}」不在触发范围` };
   }
-  return broadcastTicket(record, 'rebroadcast');
+  return broadcastTicket(record, 'rebroadcast', { bypassQuiet: true });
 }
 
 /**

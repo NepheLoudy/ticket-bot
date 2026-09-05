@@ -2,7 +2,7 @@
 
 版本隔离单位：一次 `npm run push`（= 一次 git 提交 + 一次部署）。v1~v42 于 2026-09-04 按提交历史回溯编号，此后每次 push 在文末追加新版本（规则见顶层 [AGENTS.md](../../AGENTS.md)）。
 
-当前最新：**v50**（2026-09-05，随本提交落地）。
+当前最新：**v52**（2026-09-06，随本提交落地）。
 
 ## 阶段十二 · 无人接单升级 + 结单提醒只私聊（2026-09-05）
 
@@ -243,3 +243,23 @@
 - DEFAULT_CHAT_ID 支持裸 chat_id / webhook:URL（原 parseRouteTargets 要求「名字=」格式，裸值被静默丢弃致兜底群永久失效）；isSelfMention 放宽为 mentioned_type=app/bot 即命中（群内机器人显示名与配置名不一致时接单不再被静默丢弃，与 pm-robot 同款）。
 - 文档对齐：README 删失效命令（deploy:check/deploy:config）与幽灵 deploy 脚本、补 /api/bot/test-nudge 与 9 个脚本说明、配置表补 MULTI_ACCEPT_*/ASSIGN_NUDGE_HOURS/APPROVAL_NODE_ASSIGN_ACCEPT_VALUE；.env.example 补 FIELD_MAPPING/WATCHED_FIELDS/IGNORE_CHAT_IDS 占位；scripts/verify-nas.js（上轮漏播排查工具）随批入库。
 - 版本线备注：v43~v49 期间条目未及时入档，版本号以 git 提交消息为准（9dcbc8d=v49），本条起恢复逐 push 记录。
+
+## 阶段十三 · 晚间静默——播报时段限制（2026-09-06）
+
+### v51 · 2026-09-06 · 随本提交落地 · feat
+**02:00–09:00（Asia/Shanghai）静默窗口：定时/自动播报积压到 09:00 统一补发（可配可关）**
+- 新增 `src/utils/quietHours.js` 通用闸门（顶层 AGENTS.md「晚间静默」规则的本仓实现）：窗口 `[QUIET_HOURS_START, QUIET_HOURS_END)`（默认 2→9，支持跨午夜写法，`QUIET_HOURS_DISABLED=1` 关闭）内播报不直接发送，积压持久化到 `.quiet-backlog.json`（重启不丢），启动时过点立即补冲刷、未过点调度到 09:00；冲刷失败单条保留重试 ≤3 次。
+- 按任务形态接线（挤压要为挤压之后的事情负责）：①超时检查/结单提醒/确认追问（每小时）静默内**整轮跳过**——不计轮次、不写提醒/节流状态，09:00 整点轮次天然就是冲刷；②工单播报 `broadcastTicket` 静默内**直接顺延且零副作用**（不发送/不写播报标记/不公示即绑定/不登记待接单），每分钟对账在 09:00 后第一个 tick 自然补播，播报前重查兜住夜间已接单/节点推进；③每日汇总 `gateTask` 按触发槽位登记、冲刷重跑（取补发时刻数据）；④多人单结束通告 `gatePayload` 原样落盘卡片载荷按序补发（审批自动通过本身不延迟，只延后通告）。
+- 豁免：对话/指令回复（接单确认等交互回路）与人工当下主动触发（`/api/bot/rebroadcast` 单条补播 `bypassQuiet=true`、`/test-*` 手动接口）。
+- 其他：`/api/bot/cron-status` 附 `quietHours` 状态（窗口/是否静默/积压条数/下次冲刷）；`.quiet-backlog.json` 进 .gitignore；.env.example 补 `QUIET_HOURS_*` 占位。
+- 版本线备注：v50 在历史中出现两次（`0607a21` fix 审查修复批次 + `28efc2b` feat 无人接单升级），历史条目不改写，本条起自 v51 续增。
+- 文档：ticket-pm/LOGIC-MAP.md §1.4 注 + 新增 §1.7；顶层 AGENTS.md 新增「晚间静默」规则段。
+
+## 阶段十四 · 群内问询节流 + DDL「无人接单」分栏（2026-09-06）
+
+### v52 · 2026-09-06 · 随本提交落地 · feat
+**无负责人工单群内问询改 6h×2 封顶 + unclosed API 新增无人接单分桶（v51 晚间静默同批上线）**
+- 超时分支 2.2（无指定负责人）的群内重问询从「每小时一次、无上限」改为**每 6 小时一次、每单封顶 2 次**（≈发起后 6h、12h 各问询一次）：新增 `TIMEOUT_REASK` + `reaskState`（内存计数，重启清零、48h TTL，与轮次状态同款取舍）；至少一群发送成功才占用额度（全失败不消耗，下轮重试）；间隔未到/已达封顶的轮次只跳过群内问询卡——第 2 轮起的「无人接单升级」组长私聊照常（≥3h 间隔），封顶后由它承担持续提醒。**多人单不受限**：有人接单即合并写补充负责人、天然退出本检查；续接窗口的续接询问（ticketService 接单路径）与到期自动通过（对账路径）不经此处。
+- `unclosedService.getUnclosedByGroup` 新增 `unclaimed` 分桶：节点 ∈ 触发节点（拆段匹配）+ 补充负责人为空 + 距发起 ≥6h（与超时检查阈值对齐，刚发布的不曝光）；无负责人可解析，按工单「面向组别」直连 `GROUP_ROUTES` 映射播报群；按已发布时长降序。返回结构 additive（每 chatId 增加一键，pm-robot 旧读法兼容），供 pm-robot DDL 卡「无人接单」分栏取数。
+- 顺带修复：结单分桶原走服务端等值过滤（`审批节点 = "回执单：是否结单"`），并行分支「；」拼接节点值匹配不上会**静默漏桶**——随本批改全量拉取 + `matchNodeValue` 拆段匹配（与超时检查/确认追问 v50 同款整改）。
+- 文档：ticket-pm/LOGIC-MAP.md §1.4（超时检查行）/§1.6（API 口径）、pm-robot 侧 §2.2(4)；顶层 DEVLOG v31 联动摘要。
