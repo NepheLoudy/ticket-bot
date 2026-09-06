@@ -57,7 +57,7 @@ function isBroadcastEnabled() {
 // 多人接单（无指定负责人工单，config.multiAccept）
 // 「是否允许多人接单」=是：首人接单不即时通过审批，开启工单级续接窗口
 // （面向多组别共享同一计时器）；窗口内再有人接单 → 合并补充负责人、
-// 在已有人接单的群发续接询问并重置计时（"再次播报再来6小时"）；
+// 在本次接单发生的群发续接询问并重置计时（"再次播报再来6小时"）；
 // 到期无人续接 → 自动通过全部触发节点审批。
 // 窗口截止写回源表字段（自动创建），跨重启恢复；到期检查挂在每分钟对账上。
 // ============================================================
@@ -108,8 +108,9 @@ function formatMultiNames(acceptors) {
 }
 
 /**
- * 多人单通知目标群：已有人接单的群（各接单人组别映射到播报群）∪ 本次接单发生的群。
- * 「询问是否有人继续」只发这些群，不广播到工单全部面向组别
+ * 多人单「窗口结束」通告目标群：各接单人组别映射到播报群。
+ * （续接询问已改只在接单发生群发，不走本函数——组别解析失败会回退
+ * 「面向组别」，把询问广播到全部组；结束通告是收尾知会，保留组别口径）
  */
 async function collectMultiNoticeTargets(fields, acceptors, extraChatId) {
   const chatIds = new Set(extraChatId ? [extraChatId] : []);
@@ -901,8 +902,15 @@ async function handleAcceptOrder(chatId, userId, userName, message) {
     const role = isAssignTicket ? '负责人' : '组员';
 
     // 1. 更新项目状态为 in_progress（搬运时已是 waiting，确认接单才开始执行）
-    await syncService.updateProjectStatus(sourceRecordId, 'in_progress');
-    console.log(`[接单确认] 项目状态更新为 in_progress`);
+    //    看板更新是派生视图维护，不作为接单前置条件：搬运走 category 门控，
+    //    category 为空的工单本来就不进看板，这里 throw 会中止整个接单
+    //    （补充负责人写不上 → 超时检查持续对所有面向组别播报，recvulRfoRHhsI 事故）
+    try {
+      await syncService.updateProjectStatus(sourceRecordId, 'in_progress');
+      console.log(`[接单确认] 项目状态更新为 in_progress`);
+    } catch (statusErr) {
+      console.warn(`[接单确认] 看板状态更新失败（不阻断接单）: ${statusErr.message}`);
+    }
 
     // 2.5 写入「补充负责人」字段：合并写入（多人单窗口期内会陆续多人接单，不能覆盖）
     const supplementField = config.assign.supplementField;
@@ -980,17 +988,18 @@ async function handleAcceptOrder(chatId, userId, userName, message) {
     // 5. 审批联动 / 多人接单分支：
     //    - 多人单（无指定负责人 + 「是否允许多人接单」=是）：不即时通过审批；
     //      写窗口截止（now + N 小时，窗口内再有人接单会重新计时），
-    //      并在已有人接单的群（含本次接单群）发续接询问；到期由每分钟对账自动通过
+    //      并在本次接单的群发续接询问；到期由每分钟对账自动通过
     //    - 其余（含指定负责人、未开多人的普通单）：接单即自动通过全部并行触发节点任务
     //      （尽力而为，不影响接单结果；失败由对账补偿）
     if (!isAssignTicket && isMultiAcceptTicket(fresh.fields)) {
       try {
         const windowUntil = Date.now() + config.multiAccept.windowHours * 60 * 60 * 1000;
         await writeMultiWindowDeadline(sourceRecordId, windowUntil);
-        const targets = await collectMultiNoticeTargets(fresh.fields, acceptors, chatId);
-        await sendCardToTargets(targets, buildMultiAcceptCard({ title, acceptors, windowUntil }));
+        // 续接询问只发本次接单发生的群（用户裁定 2026-09-06）：不做组别解析映射——
+        // resolvePersonGroups 解析失败会回退到工单「面向组别」，等于广播全部组
+        await sendCardToTargets([{ chatId }], buildMultiAcceptCard({ title, acceptors, windowUntil }));
         const deadlineText = new Date(windowUntil).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false });
-        console.log(`[接单确认] 多人单续接窗口开启至 ${deadlineText}，已通知 ${targets.length} 个群`);
+        console.log(`[接单确认] 多人单续接窗口开启至 ${deadlineText}，续接询问已发至接单群 ${chatId}`);
       } catch (err) {
         console.warn('[接单确认] 多人单续接通知失败(不影响接单):', err.message);
       }
