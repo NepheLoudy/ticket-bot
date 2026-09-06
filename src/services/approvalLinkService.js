@@ -18,6 +18,7 @@ const { formatFieldText } = require('../utils/fields');
 //       群内 @机器人 接单成功 → 以各任务审批人身份逐个调同意 API，
 //       审批流自动流转（节点审批人可全部配置为同一个人）。
 // 事件/接单之间有时差：缓存优先，缓存缺失时按申请编号反查实例兜底。
+// task_list 的审批人是 user_id 格式，统一经通讯录归一成 open_id 后再对白名单/调同意。
 // 两层防误同：缓存层按审批人白名单过滤（事件不带节点名）；
 //             同意层校验工单「审批节点」必须处于触发节点，
 //             防止实例推进到回执单等节点后误通过新节点的任务。
@@ -45,22 +46,30 @@ function getAutoApproverIds() {
   return new Set([config.approval.autoApproverId, ...config.approval.autoApproverIds].filter(Boolean));
 }
 
-/** 拉取审批实例详情 */
+/** 拉取审批实例详情
+ *  注意：响应体本身就是实例对象（data 顶层即 task_list/form），不是 data.instance；
+ *  locale 传 zh_cn（下划线）会 99992402 参数校验失败，不要加 */
 async function getInstanceDetail(instanceId) {
   const res = await requestAPI(
     'GET',
-    `/approval/v4/instances/${instanceId}?user_id_type=open_id&locale=zh_cn`
+    `/approval/v4/instances/${instanceId}?user_id_type=open_id`
   );
   if (res.code !== 0) {
     throw new Error(`获取审批实例失败: ${res.msg} (code: ${res.code})`);
   }
-  return res.data?.instance || null;
+  return res.data?.instance || res.data || null;
 }
 
-/** 实例表单 → 工单联动信息（申请编号 + 面向组别），标题关键词自适应 */
+/** 实例表单 → 工单联动信息（申请编号 + 面向组别），标题关键词自适应
+ *  详情接口的 form 是 JSON 字符串（事件路径同款），先反序列化再迭代 */
 function extractLinkInfo(form) {
+  let items = form;
+  if (typeof items === 'string') {
+    try { items = JSON.parse(items); } catch (e) { items = []; }
+  }
+  if (!Array.isArray(items)) items = [];
   const info = { applicationNo: '', groups: [] };
-  for (const item of form || []) {
+  for (const item of items) {
     const title = String(item.title || item.custom_key || '');
     const value = typeof item.value === 'string' ? item.value : String(item.value || '');
     if (!info.applicationNo && /编号/.test(title)) {
@@ -70,6 +79,27 @@ function extractLinkInfo(form) {
     }
   }
   return info;
+}
+
+// 审批人 ID 归一：task_list 的审批人是 user_id 格式（如 778a737g，user_id_type=open_id
+// 也不改变），而白名单与 approve 接口（user_id_type=open_id）都用 open_id——
+// 非 ou_ 开头的一律经通讯录解析（带缓存，与组长解析同款模式）
+const approverOpenIdCache = new Map(); // user_id -> openId | null
+
+async function resolveToOpenId(raw) {
+  if (!raw) return '';
+  const id = String(raw);
+  if (id.startsWith('ou_')) return id;
+  if (approverOpenIdCache.has(id)) return approverOpenIdCache.get(id);
+  let openId = null;
+  try {
+    const res = await requestAPI('GET', `/contact/v3/users/${id}?user_id_type=user_id`);
+    if (res.code === 0) openId = res.data?.user?.open_id || null;
+  } catch (err) {
+    console.warn(`[审批联动] 审批人 user_id 解析 open_id 失败 ${id}: ${err.message}`);
+  }
+  approverOpenIdCache.set(id, openId);
+  return openId;
 }
 
 /**
@@ -122,12 +152,17 @@ async function handleApprovalTaskEvent(event) {
     return;
   }
 
-  const approverId = task.user_id || task.approver_id || '';
+  // task_list 的审批人是 user_id 格式，先归一成 open_id 再对白名单
+  const approverId = await resolveToOpenId(task.user_id || task.approver_id || '');
+  if (!approverId) {
+    console.log(`[审批联动] 任务 ${taskId} 审批人无法解析为 open_id，跳过: ${link.applicationNo}`);
+    return;
+  }
   // 只联动白名单审批人名下的任务（触发节点的审批人）；名单外的任务到达时留痕，
   // 便于核对 APPROVAL_AUTO_APPROVER_ID 是否配错（如张郭浩 open_id 变动）
   if (!approverAllow.has(approverId)) {
     console.log(
-      `[审批联动] 跳过非联动审批人的任务: ${link.applicationNo} task ${taskId} 审批人 open_id=${approverId || '?'}`
+      `[审批联动] 跳过非联动审批人的任务: ${link.applicationNo} task ${taskId} 审批人 open_id=${approverId}`
     );
     return;
   }
@@ -144,9 +179,16 @@ async function handleApprovalTaskEvent(event) {
 }
 
 /**
- * 缓存缺失兜底：按申请编号在审批定义近期的实例列表中定位待审任务
+ * 缓存缺失兜底：按申请编号在审批定义近期的实例中定位待审任务
  * （服务重启丢缓存 / 审批任务事件先于部署到达时使用）。
  * 并行分支下同一实例可能有多个待审任务，全部返回。
+ *
+ * 实测口径（2026-09-06 二分定位，勿回退）：
+ *  - 旧「批量获取实例ID」POST /approval/v4/instances 对本应用恒 99992402（参数怎么换都一样），
+ *    必须用实例搜索接口 POST /approval/v4/instances/query，且 approval_code 传字符串（数组报 9499）；
+ *  - 搜索结果按 serial_id（审批编号 == 工单申请编号）匹配，免逐实例解析表单；
+ *  - task_list 审批人是 user_id 格式，入库前统一 resolveToOpenId 归一并对白名单。
+ *
  * @param {string} applicationNo 申请编号
  * @returns {Promise<Array<{instanceId, taskId, approverId, approvalCode}>>}
  */
@@ -155,33 +197,35 @@ async function findPendingTasksByApplicationNo(applicationNo) {
   if (!approvalCode) return [];
 
   const now = Date.now();
-  const res = await requestAPI('POST', '/approval/v4/instances?user_id_type=open_id', {
+  const res = await requestAPI('POST', '/approval/v4/instances/query?user_id_type=open_id', {
     approval_code: approvalCode,
-    start_time: now - 14 * 86400 * 1000,
-    end_time: now,
+    instance_start_time_from: now - 14 * 86400 * 1000,
+    instance_start_time_to: now,
     page_size: 100,
   });
   if (res.code !== 0) {
     throw new Error(`查询审批实例列表失败: ${res.msg} (code: ${res.code})`);
   }
 
-  for (const instanceCode of res.data?.instance_list || []) {
-    const inst = await getInstanceDetail(instanceCode);
-    const link = extractLinkInfo(inst.form);
-    if (link.applicationNo !== applicationNo) continue;
-    // 命中实例即返回其全部待审任务（并行分支可同时挂多个触发节点任务）
-    return (inst.task_list || [])
-      .filter((t) => {
-        const status = String(t.status || '').toUpperCase();
-        if (['DONE', 'APPROVED', 'REJECTED', 'CANCELED'].includes(status)) return false;
-        return getAutoApproverIds().has(t.user_id || t.approver_id || '');
-      })
-      .map((t) => ({
-        instanceId: instanceCode,
+  const approverAllow = getAutoApproverIds();
+  for (const item of res.data?.instance_list || []) {
+    const summary = item.instance || {};
+    if (String(summary.serial_id || '') !== applicationNo) continue;
+    const inst = await getInstanceDetail(summary.code);
+    const tasks = [];
+    for (const t of inst.task_list || []) {
+      const status = String(t.status || '').toUpperCase();
+      if (['DONE', 'APPROVED', 'REJECTED', 'CANCELED'].includes(status)) continue;
+      const approverId = await resolveToOpenId(t.user_id || t.approver_id || '');
+      if (!approverId || !approverAllow.has(approverId)) continue; // 名单外 fail-closed
+      tasks.push({
+        instanceId: inst.instance_code || summary.code,
         taskId: t.id || t.task_id,
-        approverId: t.user_id || t.approver_id || '',
-        approvalCode: inst.approval_id || approvalCode,
-      }));
+        approverId,
+        approvalCode: inst.approval_code || approvalCode,
+      });
+    }
+    return tasks;
   }
   return [];
 }

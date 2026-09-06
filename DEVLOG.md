@@ -2,7 +2,7 @@
 
 版本隔离单位：一次 `npm run push`（= 一次 git 提交 + 一次部署）。v1~v42 于 2026-09-04 按提交历史回溯编号，此后每次 push 在文末追加新版本（规则见顶层 [AGENTS.md](../../AGENTS.md)）。
 
-当前最新：**v54**（2026-09-06，随本提交落地）。
+当前最新：**v55**（2026-09-06，随本提交落地）。
 
 ## 阶段十二 · 无人接单升级 + 结单提醒只私聊（2026-09-05）
 
@@ -282,3 +282,15 @@
 - 修复②（用户裁定）：多人单续接询问卡（「⏳ 开放续接至 xx」）从「各接单人组别群 ∪ 本次接单群」改为**只发本次接单发生的群**——原实现里 `resolvePersonGroups` 解析失败会回退到工单「面向组别」，等于把"还有要接单吗"广播给全部组；窗口结束通告仍走 `collectMultiNoticeTargets`（收尾知会，保留组别口径），该函数注释同步收窄。
 - 部署后补救：事故单 recvulRfoRHhsI 当时接单中止、无任何副作用（补充负责人为空、节点未动），在原群重新 @机器人 发「接单」即可正常完成；补充负责人写上后超时播报自然停止。
 - 文档：README §4 接单确认链路补一句「看板状态更新失败不阻断接单」。
+
+### v55 · 2026-09-06 · 随本提交落地 · fix
+**审批联动上线以来从未成功过的五连 bug 全修（接单后审批节点滞留触发节点的根因）**
+- 背景：v54 部署后 recvulRfoRHhsI 重新接单成功（17:48，补充负责人已写、超时播报全停），但审批节点滞留「群内有组员接单后通过」，error 日志每 10 分钟刷 `查询审批实例列表失败: field validation failed (99992402)`。回溯日志确认审批联动两条链路（事件缓存 + 反查兜底）从未成功过——「接单→自动通过审批」一直是空转，此前工单的审批都是人工过的。
+- NAS 直连探针逐参数二分，定位五个独立问题（`src/services/approvalLinkService.js`）：
+  ① `getInstanceDetail` 硬编码 `locale=zh_cn`（下划线非法）→ 详情接口恒 99992402；合法写法是 `zh-CN` 或不传，删掉。响应体实例对象在 `data` 顶层（`task_list/form` 直接挂在 data 上），原代码取 `data.instance` 恒 undefined → 即使去掉 locale 也全链路 no-op，改为 `data.instance || data` 兜底。
+  ② 反查用的旧「批量获取实例ID」`POST /approval/v4/instances` 对本应用恒 99992402（毫秒/秒时间戳、offset、page_size、去 user_id_type 全试过都一样），换实例搜索接口 `POST /approval/v4/instances/query`，且 `approval_code` 必须传字符串——传数组报 `9499 Invalid parameter type`。
+  ③ 详情接口 `form` 是 **JSON 字符串**，`extractLinkInfo` 直接 `for...of` 迭代拿到的是单个字符，申请编号永远匹配不上 → 事件路径的缓存 key 恒空；先 `JSON.parse` 再迭代。
+  ④ `task_list` 审批人是 **user_id 格式**（如 `778a737g`，`user_id_type=open_id` 也不改变返回），白名单 `APPROVAL_AUTO_APPROVER_ID` 配的是 open_id → 永不相等被 fail-closed 跳过，且 approve 接口按 `user_id_type=open_id` 调用传 user_id 必错。新增 `resolveToOpenId`（通讯录 user_id→open_id 解析，带缓存，同 v50 组长解析模式），事件缓存与反查兜底两路入库前统一归一。
+  ⑤ 匹配口径改按搜索接口返回的 `serial_id`（审批编号 == 工单表申请编号），不再逐实例拉详情解析表单，反查从 O(n) 详情请求降为 1 次详情。
+- 实测验证（NAS 探针全链路）：真实实例 `81AFF507-…`（202609050003）detail code=0，4 个并行 PENDING 任务审批人 `778a737g` 解析后命中白名单 `ou_2499…`；另确认工单卡 applink 里的 `instanceId=7682036685…` **不是** API 实例 code（detail 报 1390003），不能用于详情/同意调用。
+- 部署后动作：重启清掉 10 分钟节流，对账兜底会对 202609050003 反查定位 4 个待审任务并批量同意（同意接口是全链路唯一未实测步骤，结果随部署验证记录）。
