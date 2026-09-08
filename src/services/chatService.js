@@ -75,16 +75,17 @@ function isSelfMention(data) {
 /**
  * 接单确认文本匹配：
  * - 网关按「含接单且 @机器人 / p2p 含接单」宽口径路由，本服务只认去空白后
- *   全等的「接单 / 确认接单」，避免「还没人接单吗」「我不想接单」这类消息
- *   被误当成接单确认（误触发会写补充负责人、推进状态并自动通过审批）
+ *   全等的「接单 / 确认接单」及带排队序号的「接单N / 确认接单N」，避免
+ *   「还没人接单吗」「我不想接单」这类消息被误当成接单确认
+ *   （误触发会写补充负责人、推进状态并自动通过审批）；
+ *   序号词用于同群多张待接单工单的区分（见 ticketService 接单排队）
  */
 function isAcceptRelatedText(text) {
   return (text || '').replace(/\s+/g, '').includes('接单');
 }
 
 function isExactAcceptText(text) {
-  const t = (text || '').replace(/\s+/g, '');
-  return t === '接单' || t === '确认接单';
+  return /^(?:确认接单|接单)\d*$/.test((text || '').replace(/\s+/g, ''));
 }
 
 /**
@@ -119,7 +120,7 @@ async function processChatMessage(data) {
   if (chatType === 'group' && isAcceptRelatedText(text) && isSelfMention(data)) {
     if (!isExactAcceptText(text)) {
       console.log(`[聊天服务] 含「接单」但非精确指令，提示后忽略: ${userName || userId} 在群 ${chatId}`);
-      await sendTextToChat(chatId, '💡 接单确认请单独发送「接单」两个字，刚才的消息不会触发接单');
+      await sendTextToChat(chatId, '💡 接单确认请单独发送「接单」（群内有多张待接单工单时，按各工单卡片提示发送「接单1」「接单2」…指定要接的单），刚才的消息不会触发接单');
       return;
     }
     console.log(`[聊天服务] 收到接单确认: ${userName || userId} 在群 ${chatId}`);
@@ -134,7 +135,7 @@ async function processChatMessage(data) {
   if (chatType !== 'group' && !text.startsWith('/') && isAcceptRelatedText(text)) {
     if (!isExactAcceptText(text)) {
       console.log(`[聊天服务] 私聊含「接单」但非精确指令，提示后忽略: ${userName || userId}`);
-      await sendTextToUser(userId, '💡 如需确认接单，请直接回复「接单」两个字，刚才的消息不会触发确认');
+      await sendTextToUser(userId, '💡 如需确认接单，请直接回复「接单」，刚才的消息不会触发确认');
       return;
     }
     console.log(`[聊天服务] 收到私聊接单确认: ${userName || userId}`);
@@ -142,7 +143,7 @@ async function processChatMessage(data) {
     if (result?.success) {
       await sendTextToUser(userId, `✅ 已确认接单：${result.title}`);
     } else if (result?.reason === 'no-pending') {
-      await sendTextToUser(userId, '当前没有待你确认的指定负责人工单；如需接单请到对应工单群 @机器人 发送「接单」');
+      await sendTextToUser(userId, '当前没有待你确认的指定负责人工单；如需接单请到对应工单群 @机器人 按工单卡片提示发送「接单N」（仅一张待接时发「接单」）');
     } else {
       await sendTextToUser(userId, `⚠️ 确认未完成：${result?.reason || '未知原因'}`);
     }

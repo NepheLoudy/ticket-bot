@@ -155,7 +155,7 @@ async function nudgeGroupLeaders({ record, title, groups, elapsedHours, round })
         openId,
         `🚨 工单无人接单提醒（第 ${round} 轮）\n\n` +
         `「${groupNames.join('、')}」的工单「${title}」已发布超过 ${elapsedHours} 小时，仍没有组员接单。\n\n` +
-        `请关注组内安排：可由组员在群内 @${config.bot.name} 发送「接单」，或由你本人接单。\n` +
+        `请关注组内安排：可由组员在群内 @${config.bot.name} 按工单卡片提示发送「接单N」接单（仅一张待接时发「接单」），或由你本人接单。\n` +
         `工单详情：${approvalUrl}`
       );
       sent++;
@@ -335,6 +335,7 @@ async function checkTimeoutTickets() {
       assignValue: config.assign.field ? fields[config.assign.field] : '',
       groups: config.broadcast.routeField ? (fields[config.broadcast.routeField] || []) : [],
       elapsedHours: Math.floor(elapsed / (60 * 60 * 1000)),
+      sourceRecords: records, // 本轮触发节点工单全集（接单排队推导复用，免重复拉表）
     });
   }
 
@@ -346,7 +347,7 @@ async function checkTimeoutTickets() {
  * 处理超时工单分支
  */
 async function handleTimeoutTicket(ticketInfo) {
-  const { record, currentHandler, initiator, assignValue, groups, elapsedHours } = ticketInfo;
+  const { record, currentHandler, initiator, assignValue, groups, elapsedHours, sourceRecords } = ticketInfo;
   const recordId = record.record_id;
   const title = formatFieldText(record.fields['申请编号']) || formatFieldValue(record.fields['需求1'] ?? record.fields['需求']) || `工单-${recordId.slice(-6)}`;
 
@@ -408,7 +409,7 @@ async function handleTimeoutTicket(ticketInfo) {
       await sendTextToUser(
         currentHandler.id,
         `📋 工单「${title}」已指定负责人，超过 ${elapsedHours} 小时未确认接单\n\n` +
-        `若该工单由您负责，请在工单群 @${config.bot.name} 发送「接单」完成确认（或私聊本机器人回复「接单」）；\n` +
+        `若该工单由您负责，可直接私聊本机器人回复「接单」完成确认（或在工单群 @${config.bot.name} 按工单卡片提示发送「接单N」，仅一张待接时发「接单」）；\n` +
         `确认后请尽快处理：\n` +
         `${getTicketApprovalUrl(record.fields, recordId)}\n\n` +
         `如有疑问请联系发起人或管理员。`
@@ -444,12 +445,32 @@ async function handleTimeoutTicket(ticketInfo) {
     return { branch: 'reannounce', success: false, error: '无播报目标' };
   }
 
+  // 接单排队：群内多张待接单工单时，问询卡的接单词带序号（与播报卡同源推导；
+  // 本轮拉取的就是触发节点工单全集，覆盖排队候选，直接复用免重复拉表）
+  let acceptQueues = new Map();
+  try {
+    acceptQueues = await ticketService.computeAcceptQueues(sourceRecords);
+  } catch (err) {
+    console.warn(`[超时处理] 接单队列推导失败（按「接单」问询）: ${err.message}`);
+  }
+
   const results = [];
   for (const target of targets) {
     try {
+      const member = target.chatId ? acceptQueues.get(target.chatId)?.find((q) => q.recordId === recordId) : null;
+      const kw = member?.kw || '接单';
       // 构建重问询卡片（强调还没人接单，@组长）
-      const card = buildReannounceCard(record, elapsedHours, target.value);
-      await sendCardToTarget(target, card);
+      const card = buildReannounceCard(record, elapsedHours, target.value, kw);
+      const sent = await sendCardToTarget(target, card);
+      // 接单提示卡登记：后续队列变化按 message_id 改写提示行
+      ticketService.rememberKeywordCard({
+        chatId: target.chatId,
+        recordId,
+        messageId: sent?.message_id,
+        kind: 'reannounce',
+        ctx: { elapsedHours, groupName: target.value },
+        kw,
+      });
 
       results.push({ target: describeTarget(target), success: true });
       console.log(`[超时处理] 重问询发送成功: ${describeTarget(target)}`);
@@ -642,7 +663,7 @@ async function handleAssigneeNudge({ record, assignee }) {
     await sendTextToUser(
       assignee.id,
       `📋 工单「${title}」已指派给你并公示到你的组别群，超过 ${config.assignNudge.hours} 小时未收到你的接单确认。\n\n` +
-      `✅ 如已知悉：请在群内 @${config.bot.name} 发送「接单」，或直接私聊本机器人回复「接单」完成确认。\n` +
+      `✅ 如已知悉：直接私聊本机器人回复「接单」即可完成确认（或在群内 @${config.bot.name} 按工单卡片提示发送「接单N」，仅一张待接时发「接单」）。\n` +
       `❓ 如该工单不应由你负责，请联系管理员调整。`
     );
     assignNudgeState.set(recordId, Date.now());

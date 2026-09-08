@@ -26,6 +26,24 @@ async function sendCardToChat(chatId, cardContent) {
   return res.data;
 }
 
+/**
+ * 更新已发送的卡片消息（接单排队序号变化时改写卡片里的接单提示行；
+ * 仅 IM API 发送的卡片有 message_id 可更新，webhook 卡片不可更新）
+ */
+async function updateCardToChat(chatId, messageId, cardContent) {
+  const res = await requestAPI(
+    'PATCH',
+    `/im/v1/messages/${messageId}`,
+    { content: JSON.stringify(cardContent) }
+  );
+
+  if (res.code !== 0) {
+    throw new Error(`更新卡片消息失败: ${res.msg} (code: ${res.code})`);
+  }
+
+  return res.data;
+}
+
 async function sendCardToWebhook(webhookUrl, cardContent) {
   const res = await fetch(webhookUrl, {
     method: 'POST',
@@ -160,10 +178,19 @@ function buildTicketFieldLines(fields, exclude = []) {
 }
 
 /**
- * 未指定负责人：面向组别的群聊里发布「询问是否有人接单」的公布消息
- * 包含接单确认提醒：@应用机器人 发送「接单」（网关把该消息事件秒级转发到本服务）
+ * 接单提示行（接单词按群内排队序号可能是「接单」或「接单N」，见 ticketService 接单排队）
  */
-function buildTicketOpenCard(record) {
+function openKeywordLine(kw) {
+  return `💡 **接单方式**：在群内 **@${config.bot.name}** 并发送「${kw}」`;
+}
+
+/**
+ * 未指定负责人：面向组别的群聊里发布「询问是否有人接单」的公布消息
+ * 包含接单确认提醒：@应用机器人 发送「接单/接单N」（网关把该消息事件秒级转发到本服务）
+ * @param {object} record 源记录
+ * @param {string} kw 该群当前生效的接单词（默认「接单」）
+ */
+function buildTicketOpenCard(record, kw = '接单') {
   const { record_id, fields } = record;
   const title = getTicketTitle(fields, record_id);
 
@@ -173,7 +200,7 @@ function buildTicketOpenCard(record) {
     { tag: 'markdown', content: '📬 有新工单发布，请组内同学尽快响应' },
     ...buildTicketFieldLines(fields, [config.broadcast.titleField]),
     { tag: 'hr' },
-    { tag: 'markdown', content: `💡 **接单方式**：在群内 **@${config.bot.name}** 并发送「接单」` },
+    { tag: 'markdown', content: openKeywordLine(kw) },
     { tag: 'note', elements: [{ tag: 'plain_text', content: '机器人会自动更新项目状态为"进行中"' }] },
   ];
 
@@ -187,13 +214,18 @@ function buildTicketOpenCard(record) {
   };
 }
 
+function assignKeywordLine(kw) {
+  return `💡 **确认方式**：请本人在群内 **@${config.bot.name}** 并发送「${kw}」`;
+}
+
 /**
  * 已指定负责人：在其所属组别的群聊中 @本人 公示工单（公示即绑定：系统直接写补充负责人
- * 与看板人员字段），仅限本人 @机器人 发送「接单」完成确认（确认后推进状态并通过审批）
+ * 与看板人员字段），仅限本人 @机器人 发送「接单/接单N」完成确认（确认后推进状态并通过审批）
  * @param {object} record 源表记录
  * @param {{id: string, name: string}|null} assignee 指定负责人
+ * @param {string} kw 该群当前生效的接单词（默认「接单」）
  */
-function buildTicketAssignCard(record, assignee) {
+function buildTicketAssignCard(record, assignee, kw = '接单') {
   const { record_id, fields } = record;
   const title = getTicketTitle(fields, record_id);
   const at = buildAtTag(assignee?.id);
@@ -204,7 +236,7 @@ function buildTicketAssignCard(record, assignee) {
     { tag: 'markdown', content: `📬 ${at} **${assignee?.name || ''}** 有新工单发布，已为你自动绑定接单` },
     ...buildTicketFieldLines(fields, [config.broadcast.titleField]),
     { tag: 'hr' },
-    { tag: 'markdown', content: `💡 **确认方式**：请本人在群内 **@${config.bot.name}** 并发送「接单」` },
+    { tag: 'markdown', content: assignKeywordLine(kw) },
     { tag: 'note', elements: [{ tag: 'plain_text', content: '确认后机器人会自动更新项目状态为"进行中"并推进审批' }] },
   ];
 
@@ -268,8 +300,9 @@ function buildDailySummaryCard(stats, pendingList) {
  * @param {object} record 工单记录
  * @param {number} elapsedHours 超时小时数
  * @param {string} groupName 组别名称（用于查找组长）
+ * @param {string} kw 该群当前生效的接单词（默认「接单」）
  */
-function buildReannounceCard(record, elapsedHours, groupName) {
+function buildReannounceCard(record, elapsedHours, groupName, kw = '接单') {
   const { record_id, fields } = record;
   const title = getTicketTitle(fields, record_id);
 
@@ -285,7 +318,7 @@ function buildReannounceCard(record, elapsedHours, groupName) {
     ...buildTicketFieldLines(fields, [config.broadcast.titleField]),
     { tag: 'hr' },
     { tag: 'markdown', content: '🙋 **有兴趣接单的同学请在群内响应**' },
-    { tag: 'markdown', content: `💡 **接单方式**：在群内 **@${config.bot.name}** 并发送「接单」` },
+    { tag: 'markdown', content: openKeywordLine(kw) },
   ];
 
   // @组长
@@ -318,6 +351,7 @@ module.exports = {
   sendCardToChat,
   sendCardToWebhook,
   sendCardToTarget,
+  updateCardToChat,
   sendTextToChat,
   sendTextToUser,
   describeTarget,
