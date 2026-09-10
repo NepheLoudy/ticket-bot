@@ -61,7 +61,7 @@ function isBroadcastEnabled() {
 // （面向多组别共享同一计时器）；窗口内再有人接单 → 合并补充负责人、
 // 在本次接单发生的群发续接询问并重置计时（"再次播报再来6小时"）；
 // 到期无人续接 → 自动通过全部触发节点审批。
-// 窗口截止写回源表字段（自动创建），跨重启恢复；到期检查挂在每分钟对账上。
+// 窗口截止写回源表字段（自动创建，文本型），跨重启恢复；到期检查挂在每分钟对账上。
 // ============================================================
 
 function isMultiAcceptTicket(fields) {
@@ -70,6 +70,28 @@ function isMultiAcceptTicket(fields) {
   const raw = fields?.[field];
   const value = Array.isArray(raw) ? String(raw[0] ?? '') : String(raw ?? '');
   return value === yesValue;
+}
+
+/**
+ * 「多人接单截止」是文本型字段（ensureWindowField 以默认文本型创建）：
+ * 写入带 +08:00 偏移的 ISO 文本——毫秒数字写文本列会被飞书拒收
+ * （TextFieldConvFail 1254060，窗口截止从未落库、到期永不触发的根因），
+ * ISO 文本在表格里也可直接读。
+ */
+function formatWindowDeadline(ts) {
+  const shifted = new Date(Number(ts) + 8 * 3600 * 1000); // 固定 +08:00（与全仓 Asia/Shanghai 口径一致）
+  return `${shifted.toISOString().slice(0, 19)}+08:00`;
+}
+
+/** 读「多人接单截止」：兼容 ISO 文本（现行）与数字串（历史），解析失败返回 0 */
+function parseWindowDeadline(value) {
+  if (value === null || value === undefined || value === '') return 0;
+  const raw = Array.isArray(value) ? value[0] : value; // 富文本段兜底
+  const text = raw && typeof raw === 'object' ? String(raw.text || '') : String(raw);
+  const num = Number(text);
+  if (Number.isFinite(num) && num > 0) return num;
+  const parsed = Date.parse(text);
+  return Number.isFinite(parsed) ? parsed : 0;
 }
 
 let windowFieldReady = false;
@@ -89,19 +111,26 @@ async function ensureWindowField() {
   windowFieldReady = true;
 }
 
+/**
+ * 写窗口截止（源表文本字段，值为 ISO 文本）。
+ * @returns {Promise<boolean>} 是否写入成功——失败时调用方必须降级（窗口不存在，
+ * 若仍按多人单流程走，对账永远判不出到期，工单会卡在触发节点）
+ */
 async function writeMultiWindowDeadline(recordId, ts) {
   const field = config.multiAccept.windowField;
-  if (!field) return;
+  if (!field) return false;
   await ensureWindowField();
   try {
     await bitableApi.updateRecord(
       config.bitable.sourceAppToken,
       config.bitable.sourceTableId,
       recordId,
-      { [field]: ts }
+      { [field]: formatWindowDeadline(ts) }
     );
+    return true;
   } catch (err) {
     console.error(`[多人接单] 写窗口截止失败 ${recordId}:`, err.message);
+    return false;
   }
 }
 
@@ -166,6 +195,12 @@ async function sendCardToTargets(targets, card) {
 // 窗口到期/接单后审批补通过的尝试节流（recordId -> lastAttemptTs，1h 淘汰）
 const multiApproveAttempts = new Map();
 
+// 指定负责人本人确认的短窗重复拦截（`recordId:userId` -> ts，10 分钟淘汰）：
+// 「公示即绑定」使补负含本人无法再作「已确认」判据，这里只兜本人连点/重发；
+// TTL 短，确认后审批联动偶发失败时本人仍可稍后再试（对账不代通过指定负责人单）
+const assigneeConfirmState = new Map();
+const ASSIGNEE_CONFIRM_TTL = 10 * 60 * 1000;
+
 /**
  * 每分钟对账挂载的审批联动补偿：
  *   - 多人单：窗口到期 → 自动通过全部触发节点任务，并在已接单的群发结束通告
@@ -195,8 +230,18 @@ async function maybeAutoApproveOnReconcile(record) {
   const { autoApproveForTicket } = require('./approvalLinkService');
 
   if (isMultiAcceptTicket(f)) {
-    const deadlineTs = Number(f[config.multiAccept.windowField]) || 0;
-    if (!deadlineTs || Date.now() <= deadlineTs) return null; // 窗口未到期
+    const deadlineTs = parseWindowDeadline(f[config.multiAccept.windowField]);
+    if (!deadlineTs) {
+      // 截止缺失（本修复前的写入失败存量单 / 字段被清）：没有「到期」可判，
+      // 重新计时兜底，保证窗口最终闭合（写入再失败下轮重试，不会永久卡单）
+      const retire = Date.now() + config.multiAccept.windowHours * 60 * 60 * 1000;
+      const ok = await writeMultiWindowDeadline(record.record_id, retire);
+      console.warn(
+        `[多人接单] 窗口截止缺失，已重新计时至 ${formatWindowDeadline(retire)}${ok ? '' : '（写入仍失败，本单将继续重试）'}: ${record.record_id}`
+      );
+      return null;
+    }
+    if (Date.now() <= deadlineTs) return null; // 窗口未到期
     const result = await autoApproveForTicket(
       record,
       '',
@@ -266,7 +311,14 @@ function isTicketAwaitingKeyword(fields) {
   const assignee = config.assign.assigneeField ? (fields[config.assign.assigneeField]?.[0] || null) : null;
   const boundSpec = !!(assignee?.id && sup.length === 1 && sup.some((p) => p?.id === assignee.id));
   const isSpec = !!(config.assign.field && fields[config.assign.field] === config.assign.yesValue && assignee?.id);
-  return boundSpec || (isMultiAcceptTicket(fields) && !isSpec);
+  if (boundSpec) return true;
+  if (isMultiAcceptTicket(fields) && !isSpec) {
+    // 多人单：窗口内候接（截止缺失视为窗口仍开，由对账重新计时）；
+    // 到期后立即出队——卡片不再提示接单，避免已关闭的窗口继续收人
+    const deadlineTs = parseWindowDeadline(fields[config.multiAccept.windowField]);
+    return deadlineTs === 0 || Date.now() <= deadlineTs;
+  }
+  return false;
 }
 
 /**
@@ -355,7 +407,7 @@ function rebuildKeywordCard(entry, newKw, record) {
       const acceptors = Array.isArray(f[config.assign.supplementField])
         ? f[config.assign.supplementField].filter((p) => p?.id)
         : [];
-      const windowUntil = Number(f[config.multiAccept.windowField])
+      const windowUntil = parseWindowDeadline(f[config.multiAccept.windowField])
         || Date.now() + config.multiAccept.windowHours * 60 * 60 * 1000;
       return buildMultiAcceptCard({ title: getTicketTitle(f, record.record_id), acceptors, windowUntil, kw: newKw });
     }
@@ -1020,9 +1072,21 @@ async function handleAcceptOrder(chatId, userId, userName, message, explicitReco
     const supNow = Array.isArray(fresh.fields[config.assign.supplementField])
       ? fresh.fields[config.assign.supplementField].filter((p) => p?.id)
       : [];
-    if (supNow.some((p) => p.id === userId)) {
+    // 指定负责人单的「公示即绑定」会先写补充负责人（=指定负责人本人），
+    // 「补负含本人」≠「已确认」——本人来确认正是该链路的既定动作；
+    // 不加区分地按已确认拒绝会把本人挡在门外，工单永远停在触发节点（202609100003事故）。
+    // 本人的重复消息用短窗内存标记拦截（确认成功才登记，见下方收尾）
+    const boundAssigneeSelf = isAssignTicket && supNow.some((p) => p.id === userId);
+    if (!boundAssigneeSelf && supNow.some((p) => p.id === userId)) {
       console.log(`[接单确认] ${userName || userId} 已确认过该工单，拒绝重复确认: ${sourceRecordId}`);
       return { success: false, reason: '你已确认过该工单' };
+    }
+    if (boundAssigneeSelf) {
+      pruneExpired(assigneeConfirmState, ASSIGNEE_CONFIRM_TTL);
+      if (assigneeConfirmState.has(`${sourceRecordId}:${userId}`)) {
+        console.log(`[接单确认] 指定负责人 ${userName || userId} 短窗内重复确认，忽略: ${sourceRecordId}`);
+        return { success: false, reason: '你已确认过该工单' };
+      }
     }
     if (!isAssignTicket && !isMultiAcceptTicket(fresh.fields) && supNow.length > 0) {
       console.log(
@@ -1119,31 +1183,39 @@ async function handleAcceptOrder(chatId, userId, userName, message, explicitReco
     //      并在本次接单的群发续接询问；到期由每分钟对账自动通过
     //    - 其余（含指定负责人、未开多人的普通单）：接单即自动通过全部并行触发节点任务
     //      （尽力而为，不影响接单结果；失败由对账补偿）
+    let multiWindowOpen = false;
     if (!isAssignTicket && isMultiAcceptTicket(fresh.fields)) {
-      try {
-        const windowUntil = Date.now() + config.multiAccept.windowHours * 60 * 60 * 1000;
-        await writeMultiWindowDeadline(sourceRecordId, windowUntil);
-        // 续接询问只发本次接单发生的群（用户裁定 2026-09-06）：不做组别解析映射——
-        // resolvePersonGroups 解析失败会回退到工单「面向组别」，等于广播全部组；
-        // 接单词带本群当前排队序号（群内还有其它待接单工单时为「接单N」）并登记卡片
-        const successorKw = kw || '接单';
-        const sent = await sendCardToTarget(
-          { chatId },
-          buildMultiAcceptCard({ title, acceptors, windowUntil, kw: successorKw })
-        );
-        rememberKeywordCard({
-          chatId,
-          recordId,
-          messageId: sent?.message_id,
-          kind: 'multi',
-          kw: successorKw,
-        });
-        const deadlineText = new Date(windowUntil).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false });
-        console.log(`[接单确认] 多人单续接窗口开启至 ${deadlineText}，续接询问已发至接单群 ${chatId}（接单词「${successorKw}」）`);
-      } catch (err) {
-        console.warn('[接单确认] 多人单续接通知失败(不影响接单):', err.message);
+      const windowUntil = Date.now() + config.multiAccept.windowHours * 60 * 60 * 1000;
+      // 截止必须落库才算窗口成立（对账按它判到期）；写失败不发续接询问、
+      // 直接降级为普通单接单即通过——窗口是假的，绝不能据此卡住工单
+      multiWindowOpen = await writeMultiWindowDeadline(sourceRecordId, windowUntil);
+      if (multiWindowOpen) {
+        try {
+          // 续接询问只发本次接单发生的群（用户裁定 2026-09-06）：不做组别解析映射——
+          // resolvePersonGroups 解析失败会回退到工单「面向组别」，等于广播全部组；
+          // 接单词带本群当前排队序号（群内还有其它待接单工单时为「接单N」）并登记卡片
+          const successorKw = kw || '接单';
+          const sent = await sendCardToTarget(
+            { chatId },
+            buildMultiAcceptCard({ title, acceptors, windowUntil, kw: successorKw })
+          );
+          rememberKeywordCard({
+            chatId,
+            recordId,
+            messageId: sent?.message_id,
+            kind: 'multi',
+            kw: successorKw,
+          });
+          const deadlineText = new Date(windowUntil).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false });
+          console.log(`[接单确认] 多人单续接窗口开启至 ${deadlineText}，续接询问已发至接单群 ${chatId}（接单词「${successorKw}」）`);
+        } catch (err) {
+          console.warn('[接单确认] 多人单续接通知失败(不影响接单):', err.message);
+        }
+      } else {
+        console.warn('[接单确认] 多人单窗口截止写入失败 → 降级为接单即自动通过（不发续接询问）');
       }
-    } else {
+    }
+    if (!multiWindowOpen) {
       try {
         const { autoApproveForTicket } = require('./approvalLinkService');
         const approveResult = await autoApproveForTicket(fresh, userName, role);
@@ -1165,6 +1237,7 @@ async function handleAcceptOrder(chatId, userId, userName, message, explicitReco
       console.warn(`[接单确认] 接单词卡片刷新失败（对账重试）: ${err.message}`);
     }
 
+    if (boundAssigneeSelf) assigneeConfirmState.set(`${sourceRecordId}:${userId}`, Date.now());
     pushHistory({ type: 'accept', recordId, userId, userName, title });
     return { success: true, recordId, title };
   } catch (err) {
