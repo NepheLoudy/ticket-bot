@@ -75,8 +75,8 @@ const ticketService = require(path.join(ROOT, 'src/services/ticketService.js'));
 
 const NODE_ACCEPT = '有组员接单后通过';
 const NODE_ASSIGN_ACCEPT = '负责人确认消息后通过';
-const ME = { id: 'ou_me', name: '张郭浩' };
-const OTHER = { id: 'ou_other', name: '王义辰' };
+const ME = { id: 'ou_me', name: '测试员甲' };
+const OTHER = { id: 'ou_other', name: '测试员乙' };
 
 function baseRecord(id, over = {}) {
   return {

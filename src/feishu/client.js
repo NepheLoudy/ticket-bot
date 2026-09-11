@@ -51,6 +51,8 @@ async function requestAPI(method, path, body) {
 
   const res = await fetch(`${BASE_URL}${path}`, {
     method,
+    // 无超时的 fetch 挂起会拖死每分钟对账与全部 cron，15s 强制超时
+    signal: AbortSignal.timeout(15000),
     headers: {
       'Authorization': `Bearer ${token}`,
       'Content-Type': 'application/json',
@@ -58,7 +60,11 @@ async function requestAPI(method, path, body) {
     body: body ? JSON.stringify(body) : undefined,
   });
 
-  return res.json();
+  try {
+    return await res.json();
+  } catch (err) {
+    throw new Error(`飞书 API 返回非 JSON 响应 (HTTP ${res.status}): ${path}`);
+  }
 }
 
 module.exports = {

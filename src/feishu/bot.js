@@ -46,6 +46,8 @@ async function updateCardToChat(chatId, messageId, cardContent) {
 
 async function sendCardToWebhook(webhookUrl, cardContent) {
   const res = await fetch(webhookUrl, {
+    // 无超时的 fetch 挂起会拖住播报链路，15s 强制超时
+    signal: AbortSignal.timeout(15000),
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({

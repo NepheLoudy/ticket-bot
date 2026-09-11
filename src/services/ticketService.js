@@ -676,8 +676,13 @@ async function broadcastTicket(record, scene, options = {}) {
   // 接单排队：发送前推导各群接单词——群内已有多张待接单工单时，
   // 本单与同群其它工单的卡片提示都用带序号的「接单N」（推导失败按「接单」播报）
   let acceptQueues = new Map();
+  let queueRecords = null;
   try {
-    acceptQueues = await computeAcceptQueues();
+    queueRecords = await bitableApi.listAllRecords(
+      config.bitable.sourceAppToken,
+      config.bitable.sourceTableId
+    );
+    acceptQueues = await computeAcceptQueues(queueRecords);
   } catch (err) {
     console.warn(`[工单事件] 接单队列推导失败（按「接单」播报）: ${err.message}`);
   }
@@ -725,8 +730,9 @@ async function broadcastTicket(record, scene, options = {}) {
     }
 
     // 本单入队会改变同群其它待接单工单的排队序号，刷新那些卡片的接单提示行
+    // （复用首轮拉取的全量记录，免二次全表拉表；首轮失败时为 null 走现查）
     try {
-      await refreshAcceptKeywordCards([...new Set(sentChatIds)]);
+      await refreshAcceptKeywordCards([...new Set(sentChatIds)], queueRecords);
     } catch (err) {
       console.warn(`[工单事件] 接单词卡片刷新失败（对账重试）: ${err.message}`);
     }

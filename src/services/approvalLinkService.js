@@ -83,8 +83,8 @@ function extractLinkInfo(form) {
 
 // 审批人 ID 归一：task_list 的审批人是 user_id 格式（如 778a737g，user_id_type=open_id
 // 也不改变），而白名单与 approve 接口（user_id_type=open_id）都用 open_id——
-// 非 ou_ 开头的一律经通讯录解析（带缓存，与组长解析同款模式）
-const approverOpenIdCache = new Map(); // user_id -> openId | null
+// 非 ou_ 开头的一律经通讯录解析（成功映射长期缓存；失败的 null 不缓存，见函数内注释）
+const approverOpenIdCache = new Map(); // user_id -> openId（仅成功解析）
 
 async function resolveToOpenId(raw) {
   if (!raw) return '';
@@ -98,7 +98,10 @@ async function resolveToOpenId(raw) {
   } catch (err) {
     console.warn(`[审批联动] 审批人 user_id 解析 open_id 失败 ${id}: ${err.message}`);
   }
-  approverOpenIdCache.set(id, openId);
+  // 失败的 null 不缓存：缓存住会让该审批人的任务在事件缓存与反查兜底两路同时
+  // fail-closed，对账补偿也无法自愈（工单卡在触发节点直到重启）；瞬时失败留给
+  // 下个审批事件/下轮对账重试
+  if (openId) approverOpenIdCache.set(id, openId);
   return openId;
 }
 
@@ -123,7 +126,7 @@ async function handleApprovalTaskEvent(event) {
       const t = (inst.task_list || []).find((x) => x.id === taskId || x.task_id === taskId);
       console.log(
         `[审批联动] 未激活（待配 APPROVAL_AUTO_APPROVER_ID）: 实例 ${instanceId} task ${taskId}` +
-        ` 审批人 open_id=${t ? (t.user_id || t.approver_id || '?') : '?'} 状态=${t ? t.status : '?'}`
+        ` 审批人 user_id=${t ? (t.user_id || t.approver_id || '?') : '?'} 状态=${t ? t.status : '?'}`
       );
     } catch (err) {
       console.warn('[审批联动] 未激活，记录事件失败:', err.message);
@@ -159,7 +162,7 @@ async function handleApprovalTaskEvent(event) {
     return;
   }
   // 只联动白名单审批人名下的任务（触发节点的审批人）；名单外的任务到达时留痕，
-  // 便于核对 APPROVAL_AUTO_APPROVER_ID 是否配错（如张郭浩 open_id 变动）
+  // 便于核对 APPROVAL_AUTO_APPROVER_ID 是否配错（如审批人 open_id 变动）
   if (!approverAllow.has(approverId)) {
     console.log(
       `[审批联动] 跳过非联动审批人的任务: ${link.applicationNo} task ${taskId} 审批人 open_id=${approverId}`

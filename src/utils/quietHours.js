@@ -28,7 +28,10 @@ const path = require('path');
 // 单条工单）——前者是交互回路，后者是操作者明确要求立即发送。
 // ============================================================
 
-const BACKLOG_FILE = path.join(__dirname, '..', '..', '.quiet-backlog.json');
+// 可用 QUIET_BACKLOG_FILE 挪到项目目录外（SFTP 部署会清空项目目录，部署即丢积压）
+const BACKLOG_FILE = process.env.QUIET_BACKLOG_FILE || path.join(__dirname, '..', '..', '.quiet-backlog.json');
+// 项目外的数据目录无人预建，加载时确保存在
+try { fs.mkdirSync(path.dirname(BACKLOG_FILE), { recursive: true }); } catch { /* 写入失败时 saveBacklog 自会 warn */ }
 const TZ_OFFSET_MS = 8 * 60 * 60 * 1000; // Asia/Shanghai 无夏令时，固定 UTC+8
 const MAX_ATTEMPTS = 3;
 const FLUSH_ROUNDS = 10;
