@@ -7,7 +7,8 @@ const { resolvePersonGroups, buildPersonFieldsByGroups, mergePersonFields } = re
  * 同步服务：将工单记录搬运到项目看板
  * - category 有值时触发
  * - name 字段值作为父项目名称，在项目看板中查找匹配记录作为 parentId
- * - 指定负责人按其所属组别填到对应人员字段（机械→owner，电控/硬件→dkyjcontributers，视觉→sjcontributers，宣运→xycontributers）
+ * - 人员字段一律来自「补充负责人」全员（2026-09-13 口径：指定负责人公示时即写入补充负责人，
+ *   专项搬运废止；机械→owner，电控/硬件→dkyjcontributers，视觉→sjcontributers，宣运→xycontributers）
  */
 
 // ============================================================
@@ -94,10 +95,9 @@ function hasCategory(fields) {
  * @param {object} sourceFields 工单字段
  * @param {string} sourceRecordId 工单 record_id
  * @param {string|null} parentRecordId 父项目 record_id
- * @param {string[]|null} assigneeGroups 指定负责人所属组别（已解析，空则不填人员字段）
  * @returns {object} 项目看板字段
  */
-async function buildTargetFields(sourceFields, sourceRecordId, parentRecordId, assigneeGroups = null) {
+async function buildTargetFields(sourceFields, sourceRecordId, parentRecordId) {
   const targetFields = {};
 
   // 1. 源记录ID（查重依据）
@@ -131,14 +131,7 @@ async function buildTargetFields(sourceFields, sourceRecordId, parentRecordId, a
     targetFields['parentId'] = [parentRecordId];
   }
 
-  // 8. 人员字段（指定负责人按其所属组别填）
-  const assignee = sourceFields['指定负责人']?.[0] || null;
-  if (assignee?.id) {
-    const groups = assigneeGroups && assigneeGroups.length > 0
-      ? assigneeGroups
-      : (sourceFields['面向组别'] || []).map(String);
-    Object.assign(targetFields, buildPersonFieldsByGroups(groups, assignee.id));
-  }
+  // 8. 人员字段：一律来自「补充负责人」（见 syncRecord 3.5，指定负责人专项搬运已废止）
 
   // 9. name：支持项目统一命名「（category支持项目）」；category 为空时回退申请编号/需求
   const category = sourceFields['category'];
@@ -198,21 +191,21 @@ async function syncRecord(sourceRecord) {
   const parentName = fields['name'];
   const parentRecordId = await findParentProject(parentName);
 
-  // 2. 人员组别解析：指定负责人 + 补充负责人（接单人）都参与看板人员字段映射
-  //    （USER_GROUPS → 通讯录 → 面向组别兜底）
-  const assignee = fields['指定负责人']?.[0] || null;
+  // 2. 构造目标字段（2026-09-13 口径：指定负责人公示时即写入「补充负责人」，专项搬运废止，
+  //    看板人员一律来自补充负责人；项目性质（category）门控在 syncIfAllowed 已判，此处不重复）
   const routeGroups = config.broadcast.routeField ? fields['面向组别'] || fields[config.broadcast.routeField] : null;
-  const assigneeGroups = assignee ? await resolvePersonGroups(routeGroups, assignee) : null;
+  const targetFields = await buildTargetFields(fields, record_id, parentRecordId);
 
-  // 3. 构造目标字段
-  const targetFields = await buildTargetFields(fields, record_id, parentRecordId, assigneeGroups);
-
-  // 3.5 补充负责人（接单人）按其所属组别追加人员字段（与指定负责人并存，不清空已有）
-  const supplement = fields['补充负责人']?.[0] || null;
-  if (supplement?.id) {
-    const supplementGroups = await resolvePersonGroups(routeGroups, supplement);
-    Object.assign(targetFields, buildPersonFieldsByGroups(supplementGroups, supplement.id));
+  // 2.5 补充负责人全员（公示即绑定的指定负责人 + 所有接单人）按各自所属组别并入人员字段；
+  //     同字段多人用 mergePersonFields 并集（buildPersonFieldsByGroups 单人产物直接 Object.assign 会互覆）
+  const supplements = Array.isArray(fields['补充负责人']) ? fields['补充负责人'] : [];
+  let supplementFields = {};
+  for (const person of supplements) {
+    if (!person?.id) continue;
+    const groups = await resolvePersonGroups(routeGroups, person);
+    supplementFields = mergePersonFields(supplementFields, buildPersonFieldsByGroups(groups, person.id));
   }
+  Object.assign(targetFields, supplementFields);
 
   // 3. 查重 upsert（status 只向前推进，防止把业务事件状态重置回 waiting；
   //     人员字段与看板已有值合并，避免对账把接单写入的人冲掉）

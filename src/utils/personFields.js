@@ -123,9 +123,9 @@ function buildPersonFieldsByGroups(groups, personId) {
 
 /**
  * 合并看板已有人员字段与新增人员（同字段多人并存、按 id 去重，不清空已有组别）
- * @param {object} existingFields 目标表当前记录 fields
+ * @param {object} existingFields 目标表当前记录 fields（或用于折叠的累积结果）
  * @param {object} newPersonFields buildPersonFieldsByGroups 的产物
- * @returns {object} 合并后的人员字段（仅涉及字段）
+ * @returns {object} 合并后的人员字段（涉及字段 + 既有人员字段原样回带）
  */
 function mergePersonFields(existingFields, newPersonFields) {
   const merged = {};
@@ -140,6 +140,14 @@ function mergePersonFields(existingFields, newPersonFields) {
       }
     }
     merged[field] = list;
+  }
+  // 回带既有人员字段（仅人员字段；existingFields 可能是整条记录 fields，非人员字段不碰）。
+  // 不回带会让「折叠多人的累积结果」在下一轮合并时丢失只存在于累积侧的组别字段
+  //（2026-09-13 修复：跨组多补充负责人折叠时 owner 被丢弃）
+  for (const field of new Set(Object.values(GROUP_TO_PERSON_FIELD))) {
+    if (!(field in merged) && Array.isArray(existingFields?.[field])) {
+      merged[field] = existingFields[field];
+    }
   }
   return merged;
 }

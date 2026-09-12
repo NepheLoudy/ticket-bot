@@ -1,6 +1,6 @@
 # ticket-bot 工单系统机器人
 
-基于飞书多维表格 + 长连接事件订阅的工单机器人。监测「【27赛季】千里工单系统」数据表，按工单字段走并行分支播报到组别对应的群聊，并在 `category` 有值时把工单搬运到项目看板成为子项目。
+基于飞书多维表格 + 长连接事件订阅的工单机器人。监测「【27赛季】千里工单系统」数据表，按工单字段走并行分支播报到组别对应的群聊，并在 `category`（项目性质）有值时把工单搬运到项目看板成为子项目。**搬运人员口径（2026-09-13）：看板人员一律来自「补充负责人」全员**——指定负责人在公示时即写入补充负责人，专项搬运已废止；同组多人并集、跨组各归字段，看板已有人员合并保留。
 
 飞书应用沿用 qianli 项目群共用应用（与 knowledge-tracker / bambu-print-server / approval-bot 同一个 App），各项目按 `table_id` 过滤事件互不干扰。
 
@@ -252,7 +252,8 @@ node scripts/probe-ticket-category.js  # 探测 category 字段取值
 node scripts/probe-ticket.js           # 抽样工单记录
 node scripts/query-parent-projects.js  # 查询各 category 的顶层项目
 node scripts/verify-nas.js             # 核对 NAS 上某条工单的播报/搬运结果（一次性排查工具）
-node scripts/stub-test-multi-accept.js # 离线桩测试：多人接单窗口/对账自愈/指定负责人确认（全外部依赖走桩）
+node scripts/stub-test-multi-accept.js # 离线桩测试：多人接单窗口/对账自愈/指定负责人确认/并发接单串行化（全外部依赖走桩）
+node scripts/stub-test-sync.js         # 离线桩测试：搬运人员口径（补充负责人全员并集/指定负责人不入看板/门控）
 ```
 
 ---
