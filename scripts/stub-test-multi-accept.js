@@ -5,6 +5,7 @@
  * 全部外部依赖走桩，不读表/不写表/不发真实消息；需本地 .env（GROUP_ROUTES 路由用于断言通告群）。
  * 用法：node scripts/stub-test-multi-accept.js（全通过退出码 0）
  */
+process.env.PLAZA_BITABLE_TABLE_ID = ''; // 测试禁用动态广场写表（防污染生产表）
 const path = require('path');
 const Module = require('module');
 

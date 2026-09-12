@@ -354,3 +354,11 @@
 - 静默积压挪址：quietHours 积压文件支持 `QUIET_BACKLOG_FILE` 挪到项目目录外（push.js SFTP 兜底部署 rm -rf 清空目录会丢积压；本仓主路径 git fetch + reset --hard 保留未跟踪文件，兜底路径才受影响），本仓 `.env` 配置 `/home/qianli/ticket-bot-data/quiet-backlog.json`，quietHours 加载时自动建目录；`.env.example` 同步补键（补齐「新增配置同步改 example」欠账）。
 - 隐私清洗：DEVLOG 历史条目（v44/v45/v59 等）与 `scripts/stub-test-multi-accept.js` 中的真实姓名改为通用称谓（白名单管理员/测试员甲乙）——.env 不进 git，但文档与测试脚本会。
 - 已知待办：`GET /api/tickets/policy` 定制窗口仍未在本批落地（顶层 registry 注记同步改写为待后续批次）。
+
+### v62 · 2026-09-12 · 随本提交落地 · feat
+
+**动态广场事件流接入（工单播报/接单/结单/审批自动通过 → 机器人项目看板）**
+
+- 新增 `src/services/plaza.js`：关键业务事件写机器人项目看板「动态广场」表（`config.plaza` 默认表已内置，`PLAZA_BITABLE_TABLE_ID` 可覆盖）；失败仅 warn 绝不影响主流程，未配置表整体静默。
+- 插桩三点：`broadcastTicket` 成功播报（工单播报）、接单确认（工单接单，含角色）、对账多人单窗口到期自动通过（工单结单）与补通过（审批自动通过）。
+- 测试：`scripts/stub-test-multi-accept.js` 补 `PLAZA_BITABLE_TABLE_ID=''` 隔离（防测试污染生产表），20/20 回归全过。

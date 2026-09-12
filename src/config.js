@@ -122,6 +122,12 @@ const config = {
     appSecret: process.env.APP_SECRET || '',
   },
 
+  plaza: {
+    // 动态广场事件流（机器人项目看板「动态广场」表，供多维表格仪表盘展示）
+    appToken: process.env.PLAZA_BITABLE_APP_TOKEN || 'ZlVZbXDkRayUzSsFRiycznmZn5b',
+    tableId: process.env.PLAZA_BITABLE_TABLE_ID || 'tbld1zHXkTzko20p',
+  },
+
   bitable: {
     // 源表（工单录入表）
     sourceAppToken: process.env.BITABLE_APP_TOKEN || '',

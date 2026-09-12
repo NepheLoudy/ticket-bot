@@ -1,6 +1,7 @@
 const config = require('../config');
 const bitableApi = require('../feishu/bitable');
 const syncService = require('./syncService');
+const plaza = require('./plaza');
 const {
   sendCardToTarget,
   describeTarget,
@@ -722,6 +723,7 @@ async function broadcastTicket(record, scene, options = {}) {
     broadcastedRecords.add(recordId);
     quietDeferredLogged.delete(recordId);
     await markBroadcast(recordId, scene);
+    plaza.append({ event: '工单播报', title: `${scene}：工单 …${recordId.slice(-6)} 已播报至 ${sentChatIds.size} 个群` });
 
     // 指定负责人工单「公示即绑定」：写补充负责人 + 看板人员字段（幂等）
     // 状态推进与「负责人确认消息后通过」审批仍由本人 @机器人 接单确认触发
@@ -859,8 +861,13 @@ async function reconcileBroadcasts() {
     if (inAcceptNode) {
       try {
         const approved = await maybeAutoApproveOnReconcile(record);
-        if (approved === 'multi-closed') multiClosed++;
-        else if (approved === 'approved') reapproved++;
+        if (approved === 'multi-closed') {
+          multiClosed++;
+          plaza.append({ event: '工单结单', title: `多人单窗口到期，审批自动通过（工单 …${record.record_id.slice(-6)}）` });
+        } else if (approved === 'approved') {
+          reapproved++;
+          plaza.append({ event: '审批自动通过', title: `对账补通过审批（工单 …${record.record_id.slice(-6)}）` });
+        }
       } catch (err) {
         console.error(`[对账] 接单审批联动处理失败 ${record.record_id}:`, err.message);
       }
@@ -1221,6 +1228,7 @@ async function handleAcceptOrder(chatId, userId, userName, message, explicitReco
         console.warn('[接单确认] 多人单窗口截止写入失败 → 降级为接单即自动通过（不发续接询问）');
       }
     }
+    plaza.append({ event: '工单接单', title: `${userName || '队员'} 确认接单${role ? `（${role}）` : ''}` });
     if (!multiWindowOpen) {
       try {
         const { autoApproveForTicket } = require('./approvalLinkService');
