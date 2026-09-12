@@ -25,6 +25,48 @@ app.get('/api/health', (req, res) => {
   });
 });
 
+// ---------- 定制窗口（规则见顶层 AGENTS「机器人后端定制窗口」）：定制项全景只读 ----------
+
+app.get('/api/tickets/policy', (req, res) => {
+  const maskTarget = (t) => (t ? { value: t.value, chatId: t.chatId || '', viaWebhook: Boolean(t.webhookUrl) } : null);
+  res.json({
+    bot: { name: config.bot.name, port: config.port },
+    feishuEvent: { useLongConnection: config.feishuEvent.useLongConnection },
+    broadcast: {
+      routeField: config.broadcast.routeField,
+      routes: (config.broadcast.routes || []).map(maskTarget),
+      defaultTarget: maskTarget(config.broadcast.defaultTarget),
+      on: config.broadcast.on,
+      markField: config.broadcast.markField,
+      displayFields: config.broadcast.displayFields,
+      watchedFields: config.broadcast.watchedFields,
+    },
+    assign: {
+      field: config.assign.field,
+      assigneeField: config.assign.assigneeField,
+      supplementField: config.assign.supplementField,
+      userGroups: [...config.assign.userGroups.keys()],
+    },
+    multiAccept: { field: config.multiAccept.field, windowHours: config.multiAccept.windowHours, windowField: config.multiAccept.windowField },
+    approvalNode: {
+      field: config.approvalNode.field,
+      acceptValues: config.approvalNode.acceptValues,
+      assignAcceptValue: config.approvalNode.assignAcceptValue,
+      closeValue: config.approvalNode.closeValue,
+    },
+    approval: {
+      linked: Boolean(config.approval.approvalCode) && (config.approval.autoApproverIds.length > 0 || Boolean(config.approval.autoApproverId)),
+      autoApproverCount: config.approval.autoApproverIds.length + (config.approval.autoApproverId ? 1 : 0),
+    },
+    closeReminder: { deadlineField: config.closeReminder.deadlineField, leadDays: config.closeReminder.leadDays },
+    assignNudge: { hours: config.assignNudge.hours },
+    groupLeaders: [...config.groupLeaders.keys()],
+    ignoreChatIds: config.ignoreChatIds,
+    p2pCommandAllow: { openIdCount: config.p2pCommandAllow.openIds.length, chatIdCount: config.p2pCommandAllow.chatIds.length },
+    cron: { schedule: config.cron.schedule },
+  });
+});
+
 // ---------- 工单查询 ----------
 
 // 未结单工单按「负责人所属组别」分桶（键为群 chatId），供 pm-robot DDL 播报分组分栏

@@ -27,6 +27,9 @@ const stubs = {
     updateRecord: async (appToken, tableId, id, fields) => {
       if (updateShouldFail) throw new Error('更新记录失败: TextFieldConvFail (code: 1254060)');
       calls.updates.push({ id, fields });
+      // 写后可见（对齐真实表格语义）：并发接单串行化用例依赖后续读到最新值
+      const rec = listRecords.find((r) => r.record_id === id);
+      if (rec) rec.fields = { ...rec.fields, ...fields };
     },
     createField: async () => ({}),
   },
@@ -160,6 +163,21 @@ function reset() { calls.updates.length = 0; calls.cards.length = 0; calls.appro
   check('确认仍成功（不阻断接单）', r.success === true, JSON.stringify(r));
   check('降级触发自动通过', calls.approves.length === 1, JSON.stringify(calls.approves));
   check('未发续接询问卡', !calls.cards.some((c) => c.card?.header?.title?.content === '👥 多人接单进行中'));
+
+  console.log('\n== 9. 并发接单：同群两笔接单并发到达 → 串行化执行，合并写不丢人（2026-09-13 修复回归） ==');
+  reset();
+  listRecords = [baseRecord('r-multi-conc', { 是否允许多人接单: '是' })];
+  const [ra, rb] = await Promise.all([
+    ticketService.handleAcceptOrder('oc_4994e3f0ca73f76b1243b38622637f47', OTHER.id, OTHER.name, '接单'),
+    ticketService.handleAcceptOrder('oc_4994e3f0ca73f76b1243b38622637f47', ME.id, ME.name, '接单'),
+  ]);
+  check('两笔接单都成功（多人单续接窗口）', ra.success === true && rb.success === true, JSON.stringify([ra, rb]));
+  {
+    const supUpdates = calls.updates.filter((u) => u.fields['补充负责人']);
+    const last = supUpdates[supUpdates.length - 1];
+    const ids = ((last && last.fields['补充负责人']) || []).map((p) => p.id);
+    check('最终补充负责人合并包含两人（无覆盖丢失）', ids.includes('ou_me') && ids.includes('ou_other'), JSON.stringify(supUpdates.map((u) => u.fields['补充负责人'])));
+  }
 
   console.log('\n== 8. 接单队列：多人单到期出队 / 未到期与缺截止在队 ==');
   reset();
