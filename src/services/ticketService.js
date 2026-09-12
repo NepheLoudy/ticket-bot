@@ -971,6 +971,17 @@ async function doSync(record, scene) {
 }
 
 /**
+ * 该群当前是否存在可接单工单（2026-09-13 口径：无单的群不监听接单及其变式，
+ * 群内接单类消息静默忽略——非工单群不再收到「无待接单工单」/使用提示等噪音回复）
+ * @returns {Promise<boolean>}
+ */
+async function hasPendingAcceptInGroup(chatId) {
+  if (!chatId) return false;
+  const queues = await computeAcceptQueues();
+  return (queues.get(chatId) || []).length > 0;
+}
+
+/**
  * 处理接单确认（群聊消息中 @机器人 / 指定负责人私聊确认）
  * @param {string} chatId 群聊 ID
  * @param {string} userId 发送者 open_id
@@ -1373,6 +1384,7 @@ module.exports = {
   handleRecordCreate,
   handleRecordUpdate,
   handleAcceptOrder,
+  hasPendingAcceptInGroup,
   handleAssigneeDmConfirm,
   rebroadcastRecord,
   reconcileBroadcasts,

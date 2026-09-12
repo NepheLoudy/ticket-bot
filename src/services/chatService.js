@@ -118,6 +118,13 @@ async function processChatMessage(data) {
 
   // 接单确认：群内 @对话型机器人 发送「接单」（网关把含「接单」且 @机器人 的消息秒级路由到本项目）
   if (chatType === 'group' && isAcceptRelatedText(text) && isSelfMention(data)) {
+    // 无单群不监听（2026-09-13 口径）：该群当前没有可接单工单时静默忽略——
+    // 非工单群里聊到「接单」不再收到「无待接单工单」/使用提示等噪音回复；
+    // 指定负责人的 p2p 私聊确认链路不受影响
+    if (!(await ticketService.hasPendingAcceptInGroup(chatId))) {
+      console.log(`[聊天服务] 群 ${chatId} 当前无可接单工单，接单类消息静默忽略: ${userName || userId}`);
+      return;
+    }
     if (!isExactAcceptText(text)) {
       console.log(`[聊天服务] 含「接单」但非精确指令，提示后忽略: ${userName || userId} 在群 ${chatId}`);
       await sendTextToChat(chatId, '💡 接单确认请单独发送「接单」（群内有多张待接单工单时，按各工单卡片提示发送「接单1」「接单2」…指定要接的单），刚才的消息不会触发接单');
