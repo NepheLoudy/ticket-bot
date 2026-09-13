@@ -49,8 +49,10 @@ async function getUserGroupsFromContact(openId) {
     userDeptCache.set(openId, groupNames);
     return groupNames;
   } catch (err) {
-    console.warn(`[人员组别] 通过通讯录查询人员组别失败: ${err.message}`);
-    userDeptCache.set(openId, []);
+    // 失败不写缓存（2026-09-13）：瞬时 API 抖动的负缓存会让该成员整个进程生命周期
+    // 组别解析退化到兜底列（接单/搬运把人写错看板人员列）——与 approvalLinkService 的
+    // 「失败不缓存」口径对齐
+    console.warn(`[人员组别] 通过通讯录查询人员组别失败（不缓存，下次重试）: ${err.message}`);
     return [];
   }
 }
