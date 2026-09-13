@@ -1,4 +1,5 @@
 const express = require('express');
+const { requireApiToken } = require('./auth');
 const cors = require('cors');
 const config = require('./config');
 const { startEventSubscription, processBitableEvent } = require('./feishu/eventSubscription');
@@ -135,7 +136,7 @@ app.get('/api/sync/config', (req, res) => {
 });
 
 // 手动全量同步 源表 → 目标表
-app.post('/api/sync', async (req, res) => {
+app.post('/api/sync', requireApiToken, async (req, res) => {
   try {
     const result = await syncService.syncAll();
     res.json({ success: true, result });
@@ -147,7 +148,7 @@ app.post('/api/sync', async (req, res) => {
 
 // ---------- 播报 ----------
 
-app.post('/api/bot/test-summary', async (req, res) => {
+app.post('/api/bot/test-summary', requireApiToken, async (req, res) => {
   try {
     const result = await runSummary();
     res.json({ success: true, result });
@@ -177,7 +178,7 @@ app.get('/api/bot/cron-status', (req, res) => {
 });
 
 // 手动补播指定工单（漏播修复，走去重集合保证幂等）
-app.post('/api/bot/rebroadcast', async (req, res) => {
+app.post('/api/bot/rebroadcast', requireApiToken, async (req, res) => {
   try {
     const recordId = req.body?.recordId;
     if (!recordId) {
@@ -192,7 +193,7 @@ app.post('/api/bot/rebroadcast', async (req, res) => {
 });
 
 // 手动触发指定负责人确认追问检查（超 24h 未确认私聊追问）
-app.post('/api/bot/test-nudge', async (req, res) => {
+app.post('/api/bot/test-nudge', requireApiToken, async (req, res) => {
   try {
     const result = await runAssigneeNudgeCheck();
     res.json({ success: true, result });
@@ -203,7 +204,7 @@ app.post('/api/bot/test-nudge', async (req, res) => {
 });
 
 // 手动触发播报对账（扫描触发节点工单，漏播补播/漏搬补搬）
-app.post('/api/bot/reconcile', async (req, res) => {
+app.post('/api/bot/reconcile', requireApiToken, async (req, res) => {
   try {
     const result = await ticketService.reconcileBroadcasts();
     res.json({ success: true, result });

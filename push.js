@@ -18,6 +18,25 @@ const path = require('path');
 
 // NAS 连接配置从 .env 读取（NAS_HOST/NAS_PORT/NAS_USER/NAS_PASSWORD），脚本不存任何密钥
 require('dotenv').config({ path: path.join(__dirname, '.env') });
+// ---------- [0] 部署前测试闸门（2026-09-13 R4）：测试不过不部署；SKIP_TESTS=1 可跳过 ----------
+function runTestGate() {
+  if (process.env.SKIP_TESTS === '1') {
+    console.log('SKIP_TESTS=1，跳过部署前测试');
+    return true;
+  }
+  const { spawnSync } = require('child_process');
+  const cmd = 'node scripts/stub-test-multi-accept.js && node scripts/stub-test-sync.js';
+  if (!cmd) { console.log('[测试闸门] 无测试命令，跳过'); return true; }
+  console.log('[测试闸门] 运行:', cmd);
+  const r = spawnSync(cmd, { shell: true, stdio: 'inherit', cwd: __dirname });
+  if (r.status !== 0) {
+    console.error('部署前测试未通过（SKIP_TESTS=1 可跳过），中止部署');
+    return false;
+  }
+  console.log('[测试闸门] 通过');
+  return true;
+}
+if (!runTestGate()) process.exit(1);
 
 const commitMessage = process.argv[2] || 'update: 代码更新';
 const TAR_NAME = 'ticket-bot-deploy.tar.gz';

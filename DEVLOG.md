@@ -410,3 +410,10 @@
 **深度代码审查批：通讯录查询失败负缓存移除**
 
 - personFields 通讯录查询失败会把空结果永久写入缓存——单次 API 抖动后该成员整个进程生命周期组别解析退化到兜底列，接单/搬运把人写错看板人员列。改为失败不缓存（下次重试），与 approvalLinkService「失败不缓存」既定口径对齐。
+
+### v69 · 2026-09-13 · 随本提交落地 · feat
+
+**管理端点鉴权 + 部署前测试闸门（体系推荐 R2/R4）**
+
+- 新增 src/auth.js：/api/sync 与 /api/bot/*（test-summary/rebroadcast/test-nudge/reconcile）触发/写端点需 X-API-Token（fail-closed）。运维台代理自动带头。
+- push.js 加部署前测试闸门：multi-accept + sync 两套全过才部署。
