@@ -104,7 +104,7 @@ function bumpTimeoutRound(recordId) {
  * 组长标识 → open_id：GROUP_LEADERS 的值支持 open_id（ou_ 开头直通）
  * 或 user_id（经通讯录解析后缓存）；解析失败按跳过处理（fail-closed）
  */
-const leaderOpenIdCache = new Map(); // 原始标识 -> openId | null
+const leaderOpenIdCache = new Map(); // 原始标识 -> openId（仅缓存成功解析，失败不缓存）
 
 async function resolveLeaderOpenId(raw) {
   if (raw.startsWith('ou_')) return raw;
@@ -117,7 +117,12 @@ async function resolveLeaderOpenId(raw) {
   } catch (err) {
     console.warn(`[无人接单升级] 组长标识解析请求失败「${raw}」: ${err.message}`);
   }
-  if (!openId) console.warn(`[无人接单升级] 组长标识「${raw}」未解析到 open_id（检查 GROUP_LEADERS 值与通讯录权限）`);
+  if (!openId) {
+    // 失败不缓存（v68 口径，同 personFields/approvalLinkService）：一次 API 抖动
+    // 不该让该组长整个进程生命周期的升级私聊被静默跳过
+    console.warn(`[无人接单升级] 组长标识「${raw}」未解析到 open_id（检查 GROUP_LEADERS 值与通讯录权限）`);
+    return null;
+  }
   leaderOpenIdCache.set(raw, openId);
   return openId;
 }

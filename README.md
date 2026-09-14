@@ -253,28 +253,28 @@ node scripts/probe-project-table.js    # 探测项目看板字段结构
 node scripts/probe-ticket-category.js  # 探测 category 字段取值
 node scripts/probe-ticket.js           # 抽样工单记录
 node scripts/query-parent-projects.js  # 查询各 category 的顶层项目
-node scripts/verify-nas.js             # 核对 NAS 上某条工单的播报/搬运结果（一次性排查工具）
+node scripts/verify-nas.js             # 核对部署目标上某条工单的播报/搬运结果（一次性排查工具；脚本名沿用历史命名）
 node scripts/stub-test-multi-accept.js # 离线桩测试：多人接单窗口/对账自愈/指定负责人确认/并发接单串行化（全外部依赖走桩）
 node scripts/stub-test-sync.js         # 离线桩测试：搬运人员口径（补充负责人全员并集/指定负责人不入看板/门控）
 ```
 
 ---
 
-## 八、部署到 NAS
+## 八、部署到部署目标（小电脑）
 
 ```bash
-npm run push "提交说明"      # 一键部署：git 提交推送 → NAS 部署 → 上传 .env → pm2 重启
+npm run push "提交说明"      # 一键部署：git 提交推送 → 部署 → 上传 .env → pm2 重启
 ```
 
 `push.js` 流程：
 1. `git add` + `commit` + `push` 到 GitHub；
-2. 连接 NAS（SSH），上传代码并 `npm install`；
+2. 连接部署目标（SSH），上传代码并 `npm install`；
 3. 上传 `.env`；
 4. `pm2 restart ticket-bot`。
 
-> 若本地无法访问 GitHub（443 被重置），`push.js` 会自动降级为 SFTP 直传代码到 NAS，不影响部署。
+> 若本地无法访问 GitHub（443 被重置），`push.js` 会自动降级为 SFTP 直传代码，不影响部署。
 
-部署目标：NAS `qianli@10.253.33.233:8500`，服务路径 `/opt/ticket-bot`，端口 `3003`，pm2 进程名 `ticket-bot`。
+部署目标：小电脑 DESKTOP-FE1MIGI `mechax@192.168.31.57:22`（2026-09-14 起自旧 NAS `qianli@10.253.33.233:8500` 迁移），服务路径 `/c/qianli/opt/ticket-bot`，端口 `3003`，pm2 进程名 `ticket-bot`。
 
 ---
 

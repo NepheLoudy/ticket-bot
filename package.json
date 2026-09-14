@@ -8,7 +8,9 @@
     "dev": "nodemon src/index.js",
     "deploy": "node push.js",
     "push": "node push.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "npm run test:multi-accept && npm run test:sync",
+    "test:multi-accept": "node scripts/stub-test-multi-accept.js",
+    "test:sync": "node scripts/stub-test-sync.js"
   },
   "keywords": [
     "feishu",

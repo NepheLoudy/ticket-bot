@@ -2,7 +2,7 @@
 
 版本隔离单位：一次 `npm run push`（= 一次 git 提交 + 一次部署）。v1~v42 于 2026-09-04 按提交历史回溯编号，此后每次 push 在文末追加新版本（规则见顶层 [AGENTS.md](../../AGENTS.md)）。
 
-当前最新：**v66**（2026-09-13，随本提交落地）。
+当前最新：**v69**（2026-09-13，1ded69d）。
 
 ## 阶段十二 · 无人接单升级 + 结单提醒只私聊（2026-09-05）
 
@@ -417,3 +417,14 @@
 
 - 新增 src/auth.js：/api/sync 与 /api/bot/*（test-summary/rebroadcast/test-nudge/reconcile）触发/写端点需 X-API-Token（fail-closed）。运维台代理自动带头。
 - push.js 加部署前测试闸门：multi-accept + sync 两套全过才部署。
+
+### v70 · 2026-09-15 · 随本提交落地 · fix
+
+**全项目深度审查修复批：负缓存回归收尾 + 部署目标迁移适配入库**
+
+- 部署目标迁移适配正式入库（上次会话遗留未提交的 push.js+README 改动）：远端路径 /opt/ticket-bot、/tmp → /c/qianli/opt/ticket-bot、/c/qianli（git-bash 路径，SFTP 用 WIN 变体）；README 部署节同步（服务路径漏改处本批补齐）。
+- 组长解析负缓存回归修复（v68 漏改第三处）：cron resolveLeaderOpenId 解析失败也把 null 写入 leaderOpenIdCache（无 TTL）——一次通讯录 API 抖动后，该组长的「无人接单升级」私聊整个进程生命周期被静默跳过。改为失败不缓存，与 personFields/approvalLinkService 同口径。
+- push.js restart 步骤补 PATH 导出：小电脑 SSH 非交互 shell 默认 PATH 无 node/pm2，原写法三个 pm2 命令全部 127，代码已传但服务不重启；npmInstall 同款显式 PATH。
+- 测试闸门聚合：package.json 新增 test/test:multi-accept/test:sync script，push.js 闸门改调 npm test（后续加测试不再改 push.js）。
+- DEVLOG 头部指针修正：v66 → v69（1ded69d，此前指针漂移）。
+- 双套桩测试（multi-accept 22 项 / sync 12 项）全过。

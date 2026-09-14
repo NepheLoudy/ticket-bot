@@ -25,7 +25,7 @@ function runTestGate() {
     return true;
   }
   const { spawnSync } = require('child_process');
-  const cmd = 'node scripts/stub-test-multi-accept.js && node scripts/stub-test-sync.js';
+  const cmd = 'npm test';
   if (!cmd) { console.log('[测试闸门] 无测试命令，跳过'); return true; }
   console.log('[测试闸门] 运行:', cmd);
   const r = spawnSync(cmd, { shell: true, stdio: 'inherit', cwd: __dirname });
@@ -42,7 +42,8 @@ const commitMessage = process.argv[2] || 'update: 代码更新';
 const TAR_NAME = 'ticket-bot-deploy.tar.gz';
 // 打包时用相对文件名 + cwd 指向临时目录，避免 Windows GNU tar 把 "C:" 当远程主机
 const TAR_LOCAL = path.join(os.tmpdir(), TAR_NAME);
-const TAR_REMOTE = '/tmp/' + TAR_NAME;
+const TAR_REMOTE = '/c/qianli/' + TAR_NAME;
+const TAR_REMOTE_WIN = 'C:/qianli/' + TAR_NAME;
 
 const nasConfig = {
   host: process.env.NAS_HOST,
@@ -137,7 +138,7 @@ function exec(cmd, cb) {
 async function deployCode() {
   if (gitPushed) {
     // git 方式：NAS 从 GitHub 拉取（SSH 协议）
-    const cmd = 'cd /opt/ticket-bot && '
+    const cmd = 'cd /c/qianli/opt/ticket-bot && '
       + 'if [ ! -d .git ]; then git init; fi; '
       + 'git remote set-url origin git@github.com:NepheLoudy/ticket-bot.git 2>/dev/null || git remote add origin git@github.com:NepheLoudy/ticket-bot.git; '
       + 'git fetch origin main && git reset --hard origin/main';
@@ -172,15 +173,15 @@ async function deployCode() {
         process.exit(1);
       }
       console.log('上传代码包到 NAS...');
-      sftp.fastPut(TAR_LOCAL, TAR_REMOTE, (err2) => {
+      sftp.fastPut(TAR_LOCAL, TAR_REMOTE_WIN, (err2) => {
         if (err2) {
           console.error('代码上传失败:', err2.message);
           conn.end();
           process.exit(1);
         }
         console.log('✓ 代码包已上传');
-        const cmd = 'rm -rf /opt/ticket-bot/.git /opt/ticket-bot/* /opt/ticket-bot/.[!.]* 2>/dev/null || true; '
-          + 'tar -xzf ' + TAR_REMOTE + ' -C /opt/ticket-bot';
+        const cmd = 'rm -rf /c/qianli/opt/ticket-bot/.git /c/qianli/opt/ticket-bot/* /c/qianli/opt/ticket-bot/.[!.]* 2>/dev/null || true; '
+          + 'tar -xzf ' + TAR_REMOTE + ' -C /c/qianli/opt/ticket-bot';
         exec(cmd, () => npmInstall());
       });
     });
@@ -190,7 +191,7 @@ async function deployCode() {
 // npm install
 function npmInstall() {
   console.log('\n安装依赖...');
-  exec('cd /opt/ticket-bot && npm install --production', () => uploadEnv());
+  exec('export PATH=/c/tools/node-v22.10.0-win-x64:$PATH; cd /c/qianli/opt/ticket-bot && npm install --omit=dev', () => uploadEnv());
 }
 
 // ============ [3/4] 上传 .env ============
@@ -202,7 +203,7 @@ function uploadEnv() {
       conn.end();
       process.exit(1);
     }
-    sftp.fastPut(path.join(__dirname, '.env'), '/opt/ticket-bot/.env', (err2) => {
+    sftp.fastPut(path.join(__dirname, '.env'), 'C:/qianli/opt/ticket-bot/.env', (err2) => {
       if (err2) {
         console.error('.env 上传失败:', err2.message);
         conn.end();
@@ -217,10 +218,11 @@ function uploadEnv() {
 // ============ [4/4] 重启服务 ============
 function restart() {
   console.log('\n========== [4/4] 重启服务 ==========');
-  const cmd = 'pm2 restart ticket-bot --update-env 2>/dev/null || pm2 start /opt/ticket-bot/src/index.js --name ticket-bot; pm2 save';
+  const cmd = 'export PATH=/c/tools/node-v22.10.0-win-x64:$PATH; '
+    + 'pm2 restart ticket-bot --update-env 2>/dev/null || pm2 start /c/qianli/opt/ticket-bot/src/index.js --name ticket-bot; pm2 save';
   exec(cmd, () => {
     console.log('\n✅ 部署完成，服务状态：');
-    conn.exec('pm2 list', (err, stream) => {
+    conn.exec('export PATH=/c/tools/node-v22.10.0-win-x64:$PATH; pm2 list', (err, stream) => {
       if (err) { conn.end(); return; }
       stream.on('data', (d) => process.stdout.write(d.toString()));
       stream.on('close', () => conn.end());
