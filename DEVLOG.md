@@ -428,3 +428,11 @@
 - 测试闸门聚合：package.json 新增 test/test:multi-accept/test:sync script，push.js 闸门改调 npm test（后续加测试不再改 push.js）。
 - DEVLOG 头部指针修正：v66 → v69（1ded69d，此前指针漂移）。
 - 双套桩测试（multi-accept 22 项 / sync 12 项）全过。
+
+### v71 · 2026-09-15 · 随本提交落地 · fix
+
+**R12 跨群接单并发锁 + 鉴权/卫生批（全项目审查推荐落地批）**
+
+- 接单锁粒度从 chatId 收敛为全局（R12）：多组别工单同时进多个群的队列，两群成员几乎同时接同一单时走不同 chatId 锁，「读全量→合并写补充负责人」仍可互相覆盖丢人（v64 修复只对同群成立，其注释自述「完备」仅在该前提下成立）。接单低频，全局串行无性能影响，单实例部署形态下完备。stub-test-multi-accept 新增跨群并发回归（24 项：两群同时接同一多组别单 → 串行合并不丢人；组别路由覆盖用后还原防污染用例）。
+- .env：FEISHU_VERIFICATION_TOKEN 补配共享密钥——/api/feishu/event 的 token 校验此前因密钥为空整体跳过（fail-open），LAN 可伪造事件驱动接单写表/审批自动通过；现网关转发帧注入同一密钥，校验真实生效。
+- .env：QUIET_BACKLOG_FILE POSIX 路径显式化 C:/home（防 cwd 换盘静默漂移）。

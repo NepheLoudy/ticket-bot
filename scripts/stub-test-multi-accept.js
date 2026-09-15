@@ -76,6 +76,7 @@ for (const [key, value] of Object.entries(stubs)) {
 }
 
 const ticketService = require(path.join(ROOT, 'src/services/ticketService.js'));
+const config = require(path.join(ROOT, 'src/config.js'));
 
 const NODE_ACCEPT = '有组员接单后通过';
 const NODE_ASSIGN_ACCEPT = '负责人确认消息后通过';
@@ -178,6 +179,28 @@ function reset() { calls.updates.length = 0; calls.cards.length = 0; calls.appro
     const ids = ((last && last.fields['补充负责人']) || []).map((p) => p.id);
     check('最终补充负责人合并包含两人（无覆盖丢失）', ids.includes('ou_me') && ids.includes('ou_other'), JSON.stringify(supUpdates.map((u) => u.fields['补充负责人'])));
   }
+
+  console.log('\n== 9b. 跨群并发接单：同一多组别工单两群同时接 → 全局锁串行化，合并写不丢人（R12 回归） ==');
+  reset();
+  // 覆盖组别路由：机械组→群A、电子组→群B（多组别工单进两条队列；用后还原防污染后续用例）
+  const savedRoutes = config.broadcast.routes;
+  config.broadcast.routes = [
+    { value: '机械组', chatId: 'oc_group_a', webhookUrl: '' },
+    { value: '电子组', chatId: 'oc_group_b', webhookUrl: '' },
+  ];
+  listRecords = [baseRecord('r-xgroup', { 是否允许多人接单: '是', 面向组别: ['机械组', '电子组'] })];
+  const [rx, ry] = await Promise.all([
+    ticketService.handleAcceptOrder('oc_group_a', OTHER.id, OTHER.name, '接单'),
+    ticketService.handleAcceptOrder('oc_group_b', ME.id, ME.name, '接单'),
+  ]);
+  check('两群接单都成功（跨群串行不互斥误判）', rx.success === true && ry.success === true, JSON.stringify([rx, ry]));
+  {
+    const supUpdates2 = calls.updates.filter((u) => u.fields['补充负责人']);
+    const last2 = supUpdates2[supUpdates2.length - 1];
+    const ids2 = ((last2 && last2.fields['补充负责人']) || []).map((p) => p.id);
+    check('跨群并发最终补充负责人合并包含两人（chatId 锁盲区回归）', ids2.includes('ou_me') && ids2.includes('ou_other'), JSON.stringify(supUpdates2.map((u) => u.fields['补充负责人'])));
+  }
+  config.broadcast.routes = savedRoutes;
 
   console.log('\n== 8. 接单队列：多人单到期出队 / 未到期与缺截止在队 ==');
   reset();

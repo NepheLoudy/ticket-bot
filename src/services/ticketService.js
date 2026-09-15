@@ -990,13 +990,16 @@ async function hasPendingAcceptInGroup(chatId) {
  * @param {string|null} explicitRecordId 私聊确认链路直接指定的工单 ID（跳过序号匹配）
  */
 function handleAcceptOrder(chatId, userId, userName, message, explicitRecordId = null) {
-  return withAcceptLock(chatId, () => handleAcceptOrderLocked(chatId, userId, userName, message, explicitRecordId));
+  // R12（2026-09-15）：锁粒度从 chatId 收敛为全局——多组别工单会同时进多个群的队列，
+  // 两群成员几乎同时接同一单时走不同 chatId 锁，读改写仍可互相覆盖（v64 修复只对同群成立）。
+  // 接单低频，全局串行无性能影响，单实例部署形态下完备。
+  return withAcceptLock('global', () => handleAcceptOrderLocked(chatId, userId, userName, message, explicitRecordId));
 }
 
 // 接单是「读全量记录 → 合并写补充负责人」的读改写链路，两个并发接单若同时读到同一底版，
-// 后写会覆盖先写（丢人）。按群 chatId 串行化整个接单流程（含队列推导），并发消息排队执行。
+// 后写会覆盖先写（丢人）。全局串行化整个接单流程（含队列推导），并发消息排队执行。
 // 飞书表格无条件写（CAS），进程内串行是当前部署形态（单实例）下完备的解法。
-const acceptLocks = new Map(); // chatId -> 正在执行的接单 Promise（串行链尾）
+const acceptLocks = new Map(); // 锁键 -> 正在执行的接单 Promise（串行链尾）
 function withAcceptLock(chatId, fn) {
   const prev = acceptLocks.get(chatId) || Promise.resolve();
   const task = prev.then(fn, fn);
