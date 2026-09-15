@@ -1,5 +1,5 @@
 /**
- * 统一部署脚本：一条命令完成「代码进 Git + 配置进 NAS + 部署」
+ * 统一部署脚本：一条命令完成「代码进 Git + 配置进部署目标 + 部署」
  *
  * 用法：
  *   npm run push "提交说明"   提交并部署
@@ -7,8 +7,8 @@
  *
  * 流程：
  *   [1/4] 代码提交推送到 GitHub（失败则标记，稍后改走 SFTP 直传）
- *   [2/4] 部署代码到 NAS（git push 成功走 git fetch，失败走 SFTP 打包直传）
- *   [3/4] 上传 .env 到 NAS（含飞书密钥，只单独进 NAS，绝不进 git）
+ *   [2/4] 部署代码到部署目标（git push 成功走 git fetch，失败走 SFTP 打包直传）
+ *   [3/4] 上传 .env 到部署目标（含飞书密钥，只单独进 NAS，绝不进 git）
  *   [4/4] npm install + 重启服务
  */
 const { spawnSync } = require('child_process');
@@ -79,13 +79,13 @@ if (hasChanges) {
 const push = spawnSync('git', ['push'], { stdio: 'inherit' });
 const gitPushed = push.status === 0;
 if (gitPushed) {
-  console.log('✓ git push 成功，NAS 将通过 git fetch 拉取代码');
+  console.log('✓ git push 成功，部署目标将通过 git fetch 拉取代码');
 } else {
-  console.log('⚠ git push 失败（本地无法访问 GitHub 443），改用 SFTP 直传代码到 NAS');
+  console.log('⚠ git push 失败（本地无法访问 GitHub 443），改用 SFTP 直传代码到部署目标');
 }
 
-// ============ 连接 NAS ============
-console.log('\n========== [2/4] 连接 NAS 部署代码 ==========');
+// ============ 连接部署目标 ============
+console.log('\n========== [2/4] 连接部署目标 部署代码 ==========');
 
 const conn = new Client();
 
@@ -144,7 +144,7 @@ async function deployCode() {
       + 'git fetch origin main && git reset --hard origin/main';
     const code = await execCode(cmd);
     if (code === 0) return npmInstall();
-    console.log('⚠ NAS 拉取 GitHub 失败（NAS 网络不通），改用 SFTP 直传代码');
+    console.log('⚠ 部署目标拉取 GitHub 失败（部署目标网络不通），改用 SFTP 直传代码');
   }
   {
     // SFTP 方式：本地打包直传
@@ -172,7 +172,7 @@ async function deployCode() {
         conn.end();
         process.exit(1);
       }
-      console.log('上传代码包到 NAS...');
+      console.log('上传代码包到部署目标...');
       sftp.fastPut(TAR_LOCAL, TAR_REMOTE_WIN, (err2) => {
         if (err2) {
           console.error('代码上传失败:', err2.message);
@@ -196,7 +196,7 @@ function npmInstall() {
 
 // ============ [3/4] 上传 .env ============
 function uploadEnv() {
-  console.log('\n========== [3/4] 上传 .env 到 NAS ==========');
+  console.log('\n========== [3/4] 上传 .env 到部署目标 ==========');
   conn.sftp((err, sftp) => {
     if (err) {
       console.error('SFTP 失败:', err.message);
@@ -209,7 +209,7 @@ function uploadEnv() {
         conn.end();
         process.exit(1);
       }
-      console.log('✓ .env 已上传到 NAS（含组别路由配置）');
+      console.log('✓ .env 已上传到部署目标（含组别路由配置）');
       restart();
     });
   });
@@ -230,5 +230,5 @@ function restart() {
   });
 }
 
-console.log('正在连接 NAS...');
+console.log('正在连接部署目标...');
 conn.connect(nasConfig);
