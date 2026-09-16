@@ -56,6 +56,12 @@ if (!nasConfig.host || !nasConfig.password) {
   process.exit(1);
 }
 
+// 部署目标 node 目录：SSH 连上后远端探测 /c/tools/node-v* 覆盖（见 conn.on('ready')），
+// 探测不到回落此字面量（保持既有部署语义）。硬编码版本号在部署目标升级 node 后
+// 会让 PATH 指向不存在的目录，npm/pm2 全部 command not found
+const DEFAULT_NODE_DIR = '/c/tools/node-v22.10.0-win-x64';
+let remoteNodeDir = DEFAULT_NODE_DIR;
+
 // ============ [1/4] 代码提交推送到 GitHub ============
 console.log('========== [1/4] 代码提交推送到 GitHub ==========');
 
@@ -89,10 +95,31 @@ console.log('\n========== [2/4] 连接部署目标 部署代码 ==========');
 
 const conn = new Client();
 
-conn.on('ready', () => {
+conn.on('ready', async () => {
   console.log('SSH 连接成功');
+  // 远端探测 node 安装目录（字典序最后一个 = 版本最新；目标机默认 shell 为 git-bash）
+  const detected = (await execOut('ls -d /c/tools/node-v* 2>/dev/null | tail -1')).trim();
+  if (detected) {
+    remoteNodeDir = detected;
+    console.log(`远端 node 目录探测: ${remoteNodeDir}`);
+  } else {
+    console.log(`远端未探测到 /c/tools/node-v*，回落默认 ${DEFAULT_NODE_DIR}`);
+  }
   deployCode().catch((err) => { console.error('部署失败:', err.message); conn.end(); process.exit(1); });
 });
+
+// 执行命令并捕获 stdout（探测类命令用；失败/无输出返回空串，不中断流程）
+function execOut(cmd) {
+  return new Promise((resolve) => {
+    conn.exec(cmd, (err, stream) => {
+      if (err) { resolve(''); return; }
+      let out = '';
+      stream.on('data', (d) => { out += d.toString(); });
+      stream.stderr.on('data', () => {});
+      stream.on('close', () => resolve(out));
+    });
+  });
+}
 
 // 执行命令并返回退出码（不中断流程，便于降级处理）
 function execCode(cmd) {
@@ -191,7 +218,7 @@ async function deployCode() {
 // npm install
 function npmInstall() {
   console.log('\n安装依赖...');
-  exec('export PATH=/c/tools/node-v22.10.0-win-x64:$PATH; cd /c/qianli/opt/ticket-bot && npm install --omit=dev', () => uploadEnv());
+  exec(`export PATH=${remoteNodeDir}:$PATH; cd /c/qianli/opt/ticket-bot && npm install --omit=dev`, () => uploadEnv());
 }
 
 // ============ [3/4] 上传 .env ============
@@ -218,11 +245,11 @@ function uploadEnv() {
 // ============ [4/4] 重启服务 ============
 function restart() {
   console.log('\n========== [4/4] 重启服务 ==========');
-  const cmd = 'export PATH=/c/tools/node-v22.10.0-win-x64:$PATH; '
+  const cmd = `export PATH=${remoteNodeDir}:$PATH; `
     + 'pm2 restart ticket-bot --update-env 2>/dev/null || pm2 start /c/qianli/opt/ticket-bot/src/index.js --name ticket-bot; pm2 save';
   exec(cmd, () => {
     console.log('\n✅ 部署完成，服务状态：');
-    conn.exec('export PATH=/c/tools/node-v22.10.0-win-x64:$PATH; pm2 list', (err, stream) => {
+    conn.exec(`export PATH=${remoteNodeDir}:$PATH; pm2 list`, (err, stream) => {
       if (err) { conn.end(); return; }
       stream.on('data', (d) => process.stdout.write(d.toString()));
       stream.on('close', () => conn.end());

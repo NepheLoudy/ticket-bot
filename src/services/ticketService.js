@@ -600,14 +600,32 @@ async function handleRecordCreate(recordId, fields) {
   return { ...broadcastResult, sync: syncResult };
 }
 
+// 播报 per-recordId in-flight 锁（仿 withAcceptLock 同款串行链）：事件路径（create/publish）
+// 与每分钟对账路径可能同时对同一工单触发播报，两路各自完成「fresh 重查→发送→标记」会双播；
+// 串行化后后到者进锁内重查时已看到播报标记/去重集合，自然跳过。成功失败都经 cleanup 释放
+// （等价 try/finally），锁内抛错不悬锁。
+const broadcastLocks = new Map(); // recordId -> 正在执行的播报 Promise（串行链尾）
+function withBroadcastLock(recordId, fn) {
+  const prev = broadcastLocks.get(recordId) || Promise.resolve();
+  const task = prev.then(fn, fn);
+  broadcastLocks.set(recordId, task);
+  const cleanup = () => { if (broadcastLocks.get(recordId) === task) broadcastLocks.delete(recordId); };
+  task.then(cleanup, cleanup);
+  return task;
+}
+
 /**
- * 播报工单（按「是否指定人员负责」分支）
+ * 播报工单（per-recordId 串行入口，实际逻辑见 broadcastTicketLocked）
  * @param {object} record 源记录 { record_id, fields }
  * @param {string} scene 场景标识（create/publish）
  * @param {{bypassQuiet?: boolean}} options bypassQuiet=true 跳过晚间静默
  *        （仅人工单条补播用；静默窗口内顺延不播，09:00 后由对账自然补播）
  */
-async function broadcastTicket(record, scene, options = {}) {
+function broadcastTicket(record, scene, options = {}) {
+  return withBroadcastLock(record.record_id, () => broadcastTicketLocked(record, scene, options));
+}
+
+async function broadcastTicketLocked(record, scene, options = {}) {
   const recordId = record.record_id;
 
   // 晚间静默：窗口内不发送也不做任何副作用（不写播报标记、不公示即绑定、
@@ -723,7 +741,7 @@ async function broadcastTicket(record, scene, options = {}) {
     broadcastedRecords.add(recordId);
     quietDeferredLogged.delete(recordId);
     await markBroadcast(recordId, scene);
-    plaza.append({ event: '工单播报', title: `${scene}：工单 …${recordId.slice(-6)} 已播报至 ${sentChatIds.size} 个群` });
+    plaza.append({ event: '工单播报', title: `${scene}：工单 …${recordId.slice(-6)} 已播报至 ${[...new Set(sentChatIds)].length} 个群` });
 
     // 指定负责人工单「公示即绑定」：写补充负责人 + 看板人员字段（幂等）
     // 状态推进与「负责人确认消息后通过」审批仍由本人 @机器人 接单确认触发

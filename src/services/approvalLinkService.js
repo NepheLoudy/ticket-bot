@@ -200,36 +200,43 @@ async function findPendingTasksByApplicationNo(applicationNo) {
   if (!approvalCode) return [];
 
   const now = Date.now();
-  const res = await requestAPI('POST', '/approval/v4/instances/query?user_id_type=open_id', {
-    approval_code: approvalCode,
-    instance_start_time_from: now - 14 * 86400 * 1000,
-    instance_start_time_to: now,
-    page_size: 100,
-  });
-  if (res.code !== 0) {
-    throw new Error(`查询审批实例列表失败: ${res.msg} (code: ${res.code})`);
-  }
-
   const approverAllow = getAutoApproverIds();
-  for (const item of res.data?.instance_list || []) {
-    const summary = item.instance || {};
-    if (String(summary.serial_id || '') !== applicationNo) continue;
-    const inst = await getInstanceDetail(summary.code);
-    const tasks = [];
-    for (const t of inst.task_list || []) {
-      const status = String(t.status || '').toUpperCase();
-      if (['DONE', 'APPROVED', 'REJECTED', 'CANCELED'].includes(status)) continue;
-      const approverId = await resolveToOpenId(t.user_id || t.approver_id || '');
-      if (!approverId || !approverAllow.has(approverId)) continue; // 名单外 fail-closed
-      tasks.push({
-        instanceId: inst.instance_code || summary.code,
-        taskId: t.id || t.task_id,
-        approverId,
-        approvalCode: inst.approval_code || approvalCode,
-      });
+  // 按 next_page_token 翻页聚合：page_size:100 只取首页，14 天窗口内实例超一页时
+  // 目标单落在后面页会查空 → 缓存缺失兜底静默失效，工单卡在触发节点
+  let pageToken = '';
+  do {
+    const res = await requestAPI('POST', '/approval/v4/instances/query?user_id_type=open_id', {
+      approval_code: approvalCode,
+      instance_start_time_from: now - 14 * 86400 * 1000,
+      instance_start_time_to: now,
+      page_size: 100,
+      ...(pageToken ? { page_token: pageToken } : {}),
+    });
+    if (res.code !== 0) {
+      throw new Error(`查询审批实例列表失败: ${res.msg} (code: ${res.code})`);
     }
-    return tasks;
-  }
+
+    for (const item of res.data?.instance_list || []) {
+      const summary = item.instance || {};
+      if (String(summary.serial_id || '') !== applicationNo) continue;
+      const inst = await getInstanceDetail(summary.code);
+      const tasks = [];
+      for (const t of inst.task_list || []) {
+        const status = String(t.status || '').toUpperCase();
+        if (['DONE', 'APPROVED', 'REJECTED', 'CANCELED'].includes(status)) continue;
+        const approverId = await resolveToOpenId(t.user_id || t.approver_id || '');
+        if (!approverId || !approverAllow.has(approverId)) continue; // 名单外 fail-closed
+        tasks.push({
+          instanceId: inst.instance_code || summary.code,
+          taskId: t.id || t.task_id,
+          approverId,
+          approvalCode: inst.approval_code || approvalCode,
+        });
+      }
+      return tasks;
+    }
+    pageToken = res.data?.next_page_token || '';
+  } while (pageToken);
   return [];
 }
 

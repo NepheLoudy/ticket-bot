@@ -748,6 +748,10 @@ let closeReminderTask = null;
 let assignNudgeTask = null;
 let reconcileTask = null;
 
+// 对账整轮互斥：上一轮扫描（全量拉表+逐条处理，可能超过 1 分钟）未结束时，
+// 重叠 tick 直接跳过，防止扫描堆叠放大 API 压力与播报并发
+let reconcileRunning = false;
+
 function startCronJobs() {
   // 每日汇总任务
   if (config.cron.schedule) {
@@ -845,9 +849,16 @@ function startCronJobs() {
   }
 
   reconcileTask = cron.schedule('* * * * *', () => {
+    if (reconcileRunning) {
+      console.log('[定时任务] 上一轮播报对账仍在执行，跳过本轮 tick');
+      return;
+    }
     console.log('[定时任务] 触发播报对账');
+    reconcileRunning = true;
     ticketService.reconcileBroadcasts().catch(err => {
       console.error('[定时任务] 播报对账失败:', err.message);
+    }).finally(() => {
+      reconcileRunning = false;
     });
   }, {
     timezone: 'Asia/Shanghai',

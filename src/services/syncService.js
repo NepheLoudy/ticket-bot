@@ -108,9 +108,9 @@ async function buildTargetFields(sourceFields, sourceRecordId, parentRecordId) {
     targetFields['category'] = sourceFields['category'];
   }
 
-  // 3. ddl（理想结单时间，去掉时分秒）
-  if (sourceFields['理想结单时间']) {
-    targetFields['ddl'] = toDateOnlyTimestamp(sourceFields['理想结单时间']);
+  // 3. ddl（理想结单时间，去掉时分秒；字段名走 DEADLINE_FIELD 配置）
+  if (sourceFields[config.closeReminder.deadlineField]) {
+    targetFields['ddl'] = toDateOnlyTimestamp(sourceFields[config.closeReminder.deadlineField]);
   }
 
   // 4. fileToken（需求）
@@ -118,11 +118,13 @@ async function buildTargetFields(sourceFields, sourceRecordId, parentRecordId) {
     targetFields['fileToken'] = sourceFields['需求'] || sourceFields['需求1'];
   }
 
-  // 5. priority 默认 low
+  // 5. priority 默认 low（仅创建时写入；update 路径在 syncRecord 中剔除，
+  //    避免每分钟对账把人工/pm-robot 的优先级编辑打回默认值）
   targetFields['priority'] = 'low';
 
   // 6. status（申请状态 + 审批节点推进：已通过→completed，等待接单/确认→waiting，回执单→in_progress）
-  const applyStatus = sourceFields['申请状态'];
+  //    字段名走 STATUS_FIELD 配置（未配置回落历史字段名，保持旧行为）
+  const applyStatus = sourceFields[config.broadcast.statusField || '申请状态'];
   const approvalNode = config.approvalNode.field ? sourceFields[config.approvalNode.field] : '';
   targetFields['status'] = mapStatus(applyStatus, approvalNode);
 
@@ -193,12 +195,14 @@ async function syncRecord(sourceRecord) {
 
   // 2. 构造目标字段（2026-09-13 口径：指定负责人公示时即写入「补充负责人」，专项搬运废止，
   //    看板人员一律来自补充负责人；项目性质（category）门控在 syncIfAllowed 已判，此处不重复）
-  const routeGroups = config.broadcast.routeField ? fields['面向组别'] || fields[config.broadcast.routeField] : null;
+  //    面向组别走 ROUTE_FIELD 配置（未配置回落历史字段名，保持旧行为）
+  const routeGroups = fields[config.broadcast.routeField || '面向组别'] || null;
   const targetFields = await buildTargetFields(fields, record_id, parentRecordId);
 
   // 2.5 补充负责人全员（公示即绑定的指定负责人 + 所有接单人）按各自所属组别并入人员字段；
   //     同字段多人用 mergePersonFields 并集（buildPersonFieldsByGroups 单人产物直接 Object.assign 会互覆）
-  const supplements = Array.isArray(fields['补充负责人']) ? fields['补充负责人'] : [];
+  //     字段名走 SUPPLEMENT_ASSIGNEE_FIELD 配置（config 默认即「补充负责人」）
+  const supplements = Array.isArray(fields[config.assign.supplementField]) ? fields[config.assign.supplementField] : [];
   let supplementFields = {};
   for (const person of supplements) {
     if (!person?.id) continue;
@@ -211,6 +215,10 @@ async function syncRecord(sourceRecord) {
   //     人员字段与看板已有值合并，避免对账把接单写入的人冲掉）
   const existing = await findTargetRecordByKey(record_id);
   if (existing) {
+    // priority 仅创建时写默认 low：update 不重提，人工/pm-robot 的优先级编辑不被每分钟对账打回
+    // （与 ddl/fileToken/category「有值才带」同款处理；新单默认值仍由 buildTargetFields 提供）
+    delete targetFields.priority;
+
     const currentStatus = existing.fields['status'];
     const targetStatus = targetFields['status'];
     if (currentStatus && targetStatus && !shouldOverrideStatus(currentStatus, targetStatus)) {

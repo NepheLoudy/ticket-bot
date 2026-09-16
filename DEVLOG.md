@@ -2,7 +2,7 @@
 
 版本隔离单位：一次 `npm run push`（= 一次 git 提交 + 一次部署）。v1~v42 于 2026-09-04 按提交历史回溯编号，此后每次 push 在文末追加新版本（规则见顶层 [AGENTS.md](../../AGENTS.md)）。
 
-当前最新：**v69**（2026-09-13，1ded69d）。
+当前最新：**v73**（2026-09-17，随本提交落地）。
 
 ## 阶段十二 · 无人接单升级 + 结单提醒只私聊（2026-09-05）
 
@@ -418,7 +418,7 @@
 - 新增 src/auth.js：/api/sync 与 /api/bot/*（test-summary/rebroadcast/test-nudge/reconcile）触发/写端点需 X-API-Token（fail-closed）。运维台代理自动带头。
 - push.js 加部署前测试闸门：multi-accept + sync 两套全过才部署。
 
-### v70 · 2026-09-15 · 随本提交落地 · fix
+### v70 · 2026-09-15 · 554354f · fix
 
 **全项目深度审查修复批：负缓存回归收尾 + 部署目标迁移适配入库**
 
@@ -429,7 +429,7 @@
 - DEVLOG 头部指针修正：v66 → v69（1ded69d，此前指针漂移）。
 - 双套桩测试（multi-accept 22 项 / sync 12 项）全过。
 
-### v71 · 2026-09-15 · 随本提交落地 · fix
+### v71 · 2026-09-15 · 77cb8ec · fix
 
 **R12 跨群接单并发锁 + 鉴权/卫生批（全项目审查推荐落地批）**
 
@@ -437,8 +437,24 @@
 - .env：FEISHU_VERIFICATION_TOKEN 补配共享密钥——/api/feishu/event 的 token 校验此前因密钥为空整体跳过（fail-open），LAN 可伪造事件驱动接单写表/审批自动通过；现网关转发帧注入同一密钥，校验真实生效。
 - .env：QUIET_BACKLOG_FILE POSIX 路径显式化 C:/home（防 cwd 换盘静默漂移）。
 
-### v72 · 2026-09-16 · 随本提交落地 · docs
+### v72 · 2026-09-16 · 8f40cb7 · docs
 
 **push.js 部署目标文案清扫（docs，无行为变更）**
 
 - 「上传/连接到 NAS」等 13 处用户可见文案 → 「部署目标」；实际目标一直是小电脑（/c/qianli/opt/ticket-bot），NAS_* 变量名保留（历史命名）。
+
+### v73 · 2026-09-17 · 随本提交落地 · fix
+
+**全量 debug 批：双播关闭 + 搬运 priority 打回修复 + 脱敏与 fail-closed（九处审查修复）**
+
+- 动态广场播报文案 `sentChatIds.size`（Array 无 size）改去重 `.length`，「已播报至 undefined 个群」修复。
+- 搬运 syncRecord update 分支不再重提 `priority:'low'`（仅 create 写默认；此前每分钟对账持续打回人工/pm-robot 的优先级编辑）。
+- 播报并发双播关闭：reconcile 加模块级 running 守卫（重叠 tick 跳过）；broadcastTicket 加 per-recordId `withBroadcastLock`（仿 withAcceptLock，锁内 fresh 重查+发送+标记）。
+- `/api/sync/config`、`/api/bot/routes` webhook URL 脱敏（maskTarget 同款，遮 url/token 留 viaWebhook）。
+- 审批实例反查补 `page_token` 翻页（超 100 条实例不再截断静默失败）。
+- `/api/feishu/event` fail-closed：verification token 未配置时对 im.message/approval_task 帧回 403（url_verification 照常）。
+- 搬运字段名接 config（申请状态/补充负责人/理想结单时间/面向组别 四个已有键，其余字面量保留）。
+- push.js 远端 node 路径探测（`ls -d /c/tools/node-v*` 失败回落原字面量；npm install/pm2 restart/pm2 list 三处）。
+- .env.example：QUIET_BACKLOG_FILE 示例显式化 C:/home（与 v71 实配一致）；NAS 三键（v70 遗留工作区改动）随本批入库。
+- 测试：test:multi-accept 24 + test:sync 12 全过；改动文件 node --check 全过。
+- DEVLOG 头部指针 v69→v73，v70/v71/v72 占位哈希回填（554354f / 77cb8ec / 8f40cb7）。

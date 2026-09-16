@@ -28,8 +28,10 @@ app.get('/api/health', (req, res) => {
 
 // ---------- 定制窗口（规则见顶层 AGENTS「机器人后端定制窗口」）：定制项全景只读 ----------
 
+// webhook 目标脱敏：只读窗口一律经此输出——保留路由语义（value/chatId/viaWebhook 布尔），遮 webhook URL
+const maskTarget = (t) => (t ? { value: t.value, chatId: t.chatId || '', viaWebhook: Boolean(t.webhookUrl) } : null);
+
 app.get('/api/tickets/policy', (req, res) => {
-  const maskTarget = (t) => (t ? { value: t.value, chatId: t.chatId || '', viaWebhook: Boolean(t.webhookUrl) } : null);
   res.json({
     bot: { name: config.bot.name, port: config.port },
     feishuEvent: { useLongConnection: config.feishuEvent.useLongConnection },
@@ -115,15 +117,15 @@ app.get('/api/tickets/:id', async (req, res) => {
 
 // ---------- 同步 ----------
 
-// 查看同步配置（字段映射 + 群路由）
+// 查看同步配置（字段映射 + 群路由；群路由同 policy 口径脱敏，不回明文 webhook URL）
 app.get('/api/sync/config', (req, res) => {
   res.json({
     fieldMapping: config.sync.fieldMapping,
     syncKeyField: config.sync.syncKeyField,
     categoryField: config.sync.categoryField,
     routeField: config.broadcast.routeField,
-    routes: config.broadcast.routes,
-    defaultTarget: config.broadcast.defaultTarget,
+    routes: (config.broadcast.routes || []).map(maskTarget),
+    defaultTarget: maskTarget(config.broadcast.defaultTarget),
     displayFields: config.broadcast.displayFields,
     assign: {
       field: config.assign.field,
@@ -161,8 +163,8 @@ app.post('/api/bot/test-summary', requireApiToken, async (req, res) => {
 app.get('/api/bot/routes', (req, res) => {
   res.json({
     routeField: config.broadcast.routeField,
-    routes: config.broadcast.routes,
-    defaultTarget: config.broadcast.defaultTarget,
+    routes: (config.broadcast.routes || []).map(maskTarget),
+    defaultTarget: maskTarget(config.broadcast.defaultTarget),
   });
 });
 
@@ -225,6 +227,16 @@ app.post('/api/feishu/event', async (req, res) => {
 
   if (type === 'url_verification') {
     return res.json({ challenge });
+  }
+
+  // fail-closed（安全审查修复）：token 未配置时旧实现整段跳过校验（fail-open），
+  // 伪造的 im.message/approval_task 帧可直达对话处理与审批联动。改为未配置 token
+  // 一律 403 拒绝这两类业务事件帧；url_verification 握手与表格事件不受影响
+  const eventType = header?.event_type || '';
+  if (!config.feishuEvent.verificationToken
+    && (eventType === 'im.message.receive_v1' || eventType === 'approval_task')) {
+    console.error(`[HTTP回调] 未配置 FEISHU_VERIFICATION_TOKEN，拒绝 ${eventType} 事件帧（fail-closed）`);
+    return res.status(403).json({ error: 'Verification token not configured; event frames rejected' });
   }
 
   if (config.feishuEvent.useLongConnection) {
