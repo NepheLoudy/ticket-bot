@@ -8,9 +8,10 @@
     "dev": "nodemon src/index.js",
     "deploy": "node push.js",
     "push": "node push.js",
-    "test": "npm run test:multi-accept && npm run test:sync",
+    "test": "npm run test:multi-accept && npm run test:sync && npm run test:unclosed",
     "test:multi-accept": "node scripts/stub-test-multi-accept.js",
-    "test:sync": "node scripts/stub-test-sync.js"
+    "test:sync": "node scripts/stub-test-sync.js",
+    "test:unclosed": "node scripts/stub-test-unclosed.js"
   },
   "keywords": [
     "feishu",

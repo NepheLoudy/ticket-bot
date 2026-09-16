@@ -7,7 +7,9 @@ const { getCreatedTime } = require('../utils/fields');
 // 无人接单分桶阈值：与超时检查一致（发起超过 6h 仍无人接单才进 DDL 曝光，刚发布的工单不播）
 const UNCLAIMED_MIN_AGE_MS = 6 * 60 * 60 * 1000;
 
-// 与 pm-robot ticketCloseService 对齐的字段解析：标题取 申请编号 → 需求1/需求 → 工单-后6位
+// 与 pm-robot ticketCloseService 对齐的字段解析（2026-09-17 口径）：标题=需求文本优先
+// （需求1/需求），申请编号只作 code 标注字段——此前标题取 申请编号 优先，导致 DDL 分栏
+// 每行只显示编号看不到需求内容；两者都空回退 工单-后6位。需求截断 40 字防卡片爆行。
 function extractText(value) {
   if (value === null || value === undefined || value === '') return '';
   if (Array.isArray(value)) return extractText(value[0]);
@@ -19,13 +21,11 @@ function extractText(value) {
   return String(value);
 }
 
-function getTicketTitle(fields, recordId) {
-  return (
-    extractText(fields['申请编号']) ||
-    extractText(fields['需求1']) ||
-    extractText(fields['需求']) ||
-    `工单-${recordId.slice(-6)}`
-  );
+function getTicketDisplay(fields, recordId) {
+  const code = extractText(fields['申请编号']);
+  const request = extractText(fields['需求1']) || extractText(fields['需求']);
+  const raw = request || code || `工单-${recordId.slice(-6)}`;
+  return { title: raw.length > 40 ? `${raw.slice(0, 40)}…` : raw, code };
 }
 
 /**
@@ -91,10 +91,13 @@ async function getUnclosedByGroup() {
       }
       if (chatIds.size === 0) continue;
 
+      const display = getTicketDisplay(fields, record.record_id);
       const ticket = {
         recordId: record.record_id,
-        title: getTicketTitle(fields, record.record_id),
+        title: display.title,
+        code: display.code,
         elapsedHours: Math.floor((nowMs - createdMs) / (60 * 60 * 1000)),
+        groups: groupList,
       };
       for (const chatId of chatIds) ensureChat(chatId).unclaimed.push(ticket);
       unclaimedTotal++;
@@ -138,9 +141,11 @@ async function getUnclosedByGroup() {
     }
     if (chatIds.size === 0) continue;
 
+    const display = getTicketDisplay(fields, record.record_id);
     const ticket = {
       recordId: record.record_id,
-      title: getTicketTitle(fields, record.record_id),
+      title: display.title,
+      code: display.code,
       handlerName: people.map((p) => p.name || '未知').join('、'),
       daysLeft,
       deadlineFormatted: deadlineTs.format('YYYY-MM-DD'),
