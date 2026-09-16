@@ -7,6 +7,8 @@
 process.env.PLAZA_BITABLE_TABLE_ID = ''; // 测试禁用动态广场写表（防污染生产表）
 process.env.CATEGORY_FIELD = 'category'; // 与生产 .env 一致：门控字段即源表 category
 process.env.USER_GROUPS = '测试员甲:机械组,测试员乙:机械组,测试员丙:电控组';
+process.env.SOURCE_TABLE_ID = 'src'; // 源表/目标表分流（缺行修补用例需要）
+process.env.TARGET_TABLE_ID = 'tgt';
 
 const path = require('path');
 const Module = require('module');
@@ -15,12 +17,14 @@ const ROOT = path.join(__dirname, '..');
 
 // ---- 桩：多维表格（内存目标表，写后可见） ----
 const targetRecords = []; // 看板表内存镜像
+let sourceRecords = []; // 工单源表内存镜像（缺行修补用例）
 const createdCalls = [];
 const updatedCalls = [];
 
 const stubs = {
   [path.join(ROOT, 'src/feishu/bitable.js')]: {
     listAllRecords: async (appToken, tableId, filter) => {
+      if (tableId === 'src') return sourceRecords.map((r) => ({ ...r }));
       if (typeof filter === 'string' && filter.includes('源记录ID')) {
         // 查重过滤：CurrentValue.[源记录ID] = "xxx"
         return targetRecords.filter((r) => {
@@ -140,6 +144,26 @@ function baseFields(over = {}) {
     check('hasCategory：有值 → true', syncService.hasCategory({ category: '支持项目' }) === true);
     check('hasCategory：空串 → false', syncService.hasCategory({ category: '' }) === false);
     check('hasCategory：缺字段 → false', syncService.hasCategory({}) === false);
+  }
+
+  console.log('\n== 5. 缺行修补（事件丢失兜底，2026-09-17）==');
+  {
+    // 源表两条 category 门控记录：r1 已在看板（预置行）、rY 从未搬运
+    targetRecords.length = 0;
+    targetRecords.push({ record_id: 't-pre1', fields: { '源记录ID': 'r1' } });
+    updatedCalls.length = 0;
+    createdCalls.length = 0;
+    sourceRecords = [
+      { record_id: 'r1', fields: baseFields() },
+      { record_id: 'rY', fields: baseFields({ 申请编号: '202609170001', 补充负责人: [A] }) },
+    ];
+    const rep = await syncService.repairMissingTargets();
+    check('修补：扫描条数 = 门控记录数', rep.scanned === 2, JSON.stringify(rep));
+    check('修补：只为缺行记录补建 1 条', rep.repaired === 1 && createdCalls.length === 1, JSON.stringify(rep.items));
+    check('修补：补建的是缺行那条', rep.items[0] && rep.items[0].recordId === 'rY', JSON.stringify(rep.items));
+    check('修补：已有行不被重写', updatedCalls.filter((u) => u.id === 't-pre1').length === 0);
+    const rep2 = await syncService.repairMissingTargets();
+    check('修补：幂等（第二轮零补建）', rep2.repaired === 0, JSON.stringify(rep2));
   }
 
   console.log(`\n结果：${pass} 通过 / ${fail} 失败`);

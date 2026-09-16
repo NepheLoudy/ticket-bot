@@ -1,6 +1,7 @@
 const cron = require('node-cron');
 const config = require('../config');
 const ticketService = require('../services/ticketService');
+const syncService = require('../services/syncService');
 const bitableApi = require('../feishu/bitable');
 const {
   sendCardToTarget,
@@ -751,6 +752,8 @@ let reconcileTask = null;
 // 对账整轮互斥：上一轮扫描（全量拉表+逐条处理，可能超过 1 分钟）未结束时，
 // 重叠 tick 直接跳过，防止扫描堆叠放大 API 压力与播报并发
 let reconcileRunning = false;
+let syncRepairTask = null;
+let syncRepairRunning = false;
 
 function startCronJobs() {
   // 每日汇总任务
@@ -866,6 +869,23 @@ function startCronJobs() {
 
   console.log('[定时任务] 播报对账已启动，调度规则: 每分钟 (Asia/Shanghai)');
 
+  // 搬运缺行修补（每小时 :15，SYNC_REPAIR_SCHEDULE）：已播报工单的搬运靠单次事件，
+  // 事件在重启/网关抖动中丢失即永久漏搬——巡检看板缺行并补建（已有行不重写，防事件回环）。
+  // 纯数据对账无播报，不过晚间静默闸门。
+  syncRepairTask = cron.schedule(config.sync.repairSchedule, () => {
+    if (syncRepairRunning) {
+      console.log('[定时任务] 上一轮缺行修补仍在执行，跳过本轮');
+      return;
+    }
+    syncRepairRunning = true;
+    syncService.repairMissingTargets().catch(err => {
+      console.error('[定时任务] 缺行修补失败:', err.message);
+    }).finally(() => {
+      syncRepairRunning = false;
+    });
+  }, { timezone: 'Asia/Shanghai' });
+  console.log(`[定时任务] 搬运缺行修补已启动: ${config.sync.repairSchedule} (Asia/Shanghai)`);
+
   // 晚间静默：注册积压任务的冲刷执行器，并按启动时点调度积压补跑（有积压才调度）
   quietHours.registerTask('daily_summary', runSummaryWithRetry);
   quietHours.initQuietHoursFlush();
@@ -900,6 +920,11 @@ function stopCronJobs() {
     reconcileTask.stop();
     reconcileTask = null;
     console.log('[定时任务] 播报对账已停止');
+  }
+  if (syncRepairTask) {
+    syncRepairTask.stop();
+    syncRepairTask = null;
+    console.log('[定时任务] 搬运缺行修补已停止');
   }
 }
 

@@ -294,6 +294,36 @@ async function syncAll() {
 }
 
 /**
+ * 缺行修补（2026-09-17）：已播报工单的搬运依赖单次事件（首播 reconcile / 更新事件），
+ * 事件在重启窗口/网关抖动中丢失即永久漏搬（recvvdsjSTQoKl 事故）。每小时对 category
+ * 门控记录做一次「看板缺行」巡检，只为缺行记录补跑 syncRecord——已存在的行不重写，
+ * 避免自身写表触发更新事件形成回环。
+ */
+async function repairMissingTargets() {
+  const allRecords = await bitableApi.listAllRecords(
+    config.bitable.sourceAppToken,
+    config.bitable.sourceTableId
+  );
+  const gated = allRecords.filter(rec => hasCategory(rec.fields));
+  const repaired = [];
+  const failed = [];
+  for (const rec of gated) {
+    try {
+      const existing = await findTargetRecordByKey(rec.record_id);
+      if (existing) continue;
+      const r = await syncRecord(rec);
+      repaired.push({ recordId: rec.record_id, action: r.action, targetRecordId: r.targetRecordId });
+      console.log(`[同步服务] 缺行修补: ${rec.record_id} → ${r.targetRecordId}`);
+    } catch (err) {
+      failed.push({ recordId: rec.record_id, message: err.message });
+      console.error(`[同步服务] 缺行修补失败 ${rec.record_id}:`, err.message);
+    }
+  }
+  console.log(`[同步服务] 缺行修补完成: 扫描 ${gated.length} 条，补建 ${repaired.length} 条${failed.length ? `，失败 ${failed.length} 条` : ''}`);
+  return { scanned: gated.length, repaired: repaired.length, items: repaired, failed };
+}
+
+/**
  * 更新项目状态（用于接单确认和审批状态变化）
  * @param {string} sourceRecordId 工单 record_id
  * @param {string} status 新状态
@@ -322,6 +352,7 @@ module.exports = {
   findParentProject,
   syncRecord,
   syncAll,
+  repairMissingTargets,
   updateProjectStatus,
   mapStatus,
   shouldOverrideStatus,

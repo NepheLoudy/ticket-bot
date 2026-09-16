@@ -142,6 +142,8 @@ const config = {
     syncKeyField: process.env.SYNC_KEY_FIELD || '源记录ID',
     // 门控字段：仅当该字段有值时才搬运到目标表（如 category）
     categoryField: process.env.CATEGORY_FIELD || '',
+    // 缺行修补巡检（每小时 :15）：只补看板缺失的行，已有行不重写（2026-09-17）
+    repairSchedule: process.env.SYNC_REPAIR_SCHEDULE || '0 15 * * * *',
   },
 
   broadcast: {
