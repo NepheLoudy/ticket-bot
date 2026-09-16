@@ -31,9 +31,12 @@ function getTicketDisplay(fields, recordId) {
 /**
  * 工单按组分桶（供 DDL 播报分组分栏使用），一次全量拉取后按审批节点本地拆分两类：
  *
- * 1. 结单分桶（urgent/week）：节点 =「回执单：是否结单」（拆段匹配）且理想结单时间
- *    在 7 日内。播报对象 = 指定负责人 → 补充负责人（两者都空不播，不回退发起人/当前
- *    处理人）；分组按负责人所属组别（USER_GROUPS → 通讯录部门 → 面向组别兜底）。
+ * 1. 结单分桶（urgent/week）+ 等回执桶（waiting）：节点 =「回执单：是否结单」（拆段匹配）。
+ *    有负责人且理想结单时间在 7 日内 → urgent（≤2 天）/ week（2-7 天）；其余（无负责人 /
+ *    未填结单时间 / 超 7 日）一律进 waiting 桶（2026-09-17 用户口径：等回执=没做完，
+ *    节点上不允许静默漏播）。播报对象 = 指定负责人 → 补充负责人（不回退发起人/当前
+ *    处理人）；有负责人按人解组别（USER_GROUPS → 通讯录部门 → 面向组别兜底），
+ *    无负责人按「面向组别」直分（与无人接单桶同款兜底）。
  * 2. 无人接单分桶（unclaimed）：节点 ∈ 触发节点（拆段匹配）+ 补充负责人为空
  *    （有人接单即写入该字段：公示即绑定/多人单续接都天然不在此列）+ 距发起时间
  *    ≥ 6h（与超时检查阈值对齐）。无负责人可解析，分组直接用工单「面向组别」。
@@ -63,11 +66,10 @@ async function getUnclosedByGroup() {
   const now = dayjs();
   const nowMs = Date.now();
   const result = {};
-  let skippedNoResponsible = 0;
   let unclaimedTotal = 0;
 
   const ensureChat = (chatId) => {
-    if (!result[chatId]) result[chatId] = { urgent: [], week: [], unclaimed: [] };
+    if (!result[chatId]) result[chatId] = { urgent: [], week: [], unclaimed: [], waiting: [] };
     return result[chatId];
   };
 
@@ -105,6 +107,8 @@ async function getUnclosedByGroup() {
     }
 
     // —— 结单分桶：节点 =「回执单：是否结单」——
+    // 2026-09-17 用户口径：等回执的工单说明没做完，节点上不允许静默漏播——
+    // 有负责人且有 7 日内结单时间 → urgent/week；其余（无负责人/未填结单时间/超 7 日）→ waiting 桶
     if (!config.matchNodeValue(nodeValue, [closeValue])) continue;
 
     // 播报对象：指定负责人 → 补充负责人（不去找发起人/当前处理人）
@@ -118,54 +122,77 @@ async function getUnclosedByGroup() {
         }
       }
     }
-    if (people.length === 0) {
-      skippedNoResponsible++;
-      continue;
-    }
 
     const deadline = fields[deadlineField];
-    if (!deadline) continue;
-    const deadlineTs = dayjs(deadline);
-    if (!deadlineTs.isValid()) continue;
-    const daysLeft = deadlineTs.diff(now, 'day');
-    if (daysLeft > 7) continue; // 超出 7 日的不播报
+    const deadlineTs = deadline ? dayjs(deadline) : null;
+    const hasDeadline = Boolean(deadlineTs && deadlineTs.isValid());
+    const daysLeft = hasDeadline ? deadlineTs.diff(now, 'day') : null;
 
-    // 负责人所属组别 → 播报群 chatId（多负责人/多组别时取并集）
+    // 分组：有负责人按人解组别；无负责人按「面向组别」直分（与无人接单桶同款兜底）
     const chatIds = new Set();
-    for (const person of people) {
-      const groups = await resolvePersonGroups(routeField ? fields[routeField] : null, person);
-      for (const group of groups) {
+    if (people.length > 0) {
+      for (const person of people) {
+        const groups = await resolvePersonGroups(routeField ? fields[routeField] : null, person);
+        for (const group of groups) {
+          const route = config.broadcast.routes.find((r) => r.value === group);
+          if (route && route.chatId) chatIds.add(route.chatId);
+        }
+      }
+    } else {
+      const groups = fields[routeField] || [];
+      const groupList = Array.isArray(groups) ? groups.map(String) : groups ? [String(groups)] : [];
+      for (const group of groupList) {
         const route = config.broadcast.routes.find((r) => r.value === group);
         if (route && route.chatId) chatIds.add(route.chatId);
       }
     }
-    if (chatIds.size === 0) continue;
+    if (chatIds.size === 0) continue; // 组别/路由都解不出来（管理层等），仍无法定向播报
 
     const display = getTicketDisplay(fields, record.record_id);
-    const ticket = {
-      recordId: record.record_id,
-      title: display.title,
-      code: display.code,
-      handlerName: people.map((p) => p.name || '未知').join('、'),
-      daysLeft,
-      deadlineFormatted: deadlineTs.format('YYYY-MM-DD'),
-    };
-    const bucket = daysLeft <= 2 ? 'urgent' : 'week';
-    for (const chatId of chatIds) {
-      ensureChat(chatId)[bucket].push(ticket);
+    const qualifiesNormal = people.length > 0 && daysLeft !== null && daysLeft <= 7;
+    if (qualifiesNormal) {
+      const ticket = {
+        recordId: record.record_id,
+        title: display.title,
+        code: display.code,
+        handlerName: people.map((p) => p.name || '未知').join('、'),
+        daysLeft,
+        deadlineFormatted: deadlineTs.format('YYYY-MM-DD'),
+      };
+      const bucket = daysLeft <= 2 ? 'urgent' : 'week';
+      for (const chatId of chatIds) {
+        ensureChat(chatId)[bucket].push(ticket);
+      }
+    } else {
+      // 等回执待结单：无负责人 / 未填理想结单时间 / 超出 7 日窗口——也要曝光
+      const ticket = {
+        recordId: record.record_id,
+        title: display.title,
+        code: display.code,
+        handlerName: people.length ? people.map((p) => p.name || '未知').join('、') : '',
+        daysLeft,
+        deadlineFormatted: hasDeadline ? deadlineTs.format('YYYY-MM-DD') : '',
+      };
+      for (const chatId of chatIds) {
+        ensureChat(chatId).waiting.push(ticket);
+      }
     }
   }
 
-  // 排序：结单桶按剩余天数升序（越紧越前）；无人接单桶按已发布时长降序（等最久的排前）
+  // 排序：结单桶按剩余天数升序（越紧越前）；无人接单桶按已发布时长降序（等最久的排前）；
+  // waiting 桶有结单时间的在前（升序），未填时间的殿后
   for (const buckets of Object.values(result)) {
     buckets.urgent.sort((a, b) => a.daysLeft - b.daysLeft);
     buckets.week.sort((a, b) => a.daysLeft - b.daysLeft);
     buckets.unclaimed.sort((a, b) => b.elapsedHours - a.elapsedHours);
+    buckets.waiting.sort((a, b) => {
+      if (a.daysLeft === null && b.daysLeft === null) return 0;
+      if (a.daysLeft === null) return 1;
+      if (b.daysLeft === null) return -1;
+      return a.daysLeft - b.daysLeft;
+    });
   }
 
-  if (skippedNoResponsible > 0) {
-    console.log(`[未结单分组] ${skippedNoResponsible} 条工单无指定/补充负责人，跳过分栏播报`);
-  }
   if (unclaimedTotal > 0) {
     console.log(`[未结单分组] 无人接单分栏 ${unclaimedTotal} 条（触发节点滞留超 6h）`);
   }

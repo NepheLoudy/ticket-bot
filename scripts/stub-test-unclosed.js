@@ -102,6 +102,38 @@ function rec(fields, id) {
 
   ok(!result['oc_zp'].unclaimed.some((t) => t.recordId === 'recFresh'), '刚发布 1h 工单：不进无人接单分栏（6h 阈值）');
 
+  // —— waiting 桶（2026-09-17：等回执不允许静默漏播）——
+  fakeRecords = [
+    // 回执节点 + 无负责人 + 面向组别工位区 → waiting（组别兜底分组）
+    rec({
+      '审批节点': '回执单：是否结单',
+      '面向组别': ['工位区'],
+      '申请编号': 'GD-W-001',
+      '需求': '无负责人的等回执工单',
+    }, 'recWait1'),
+    // 回执节点 + 有负责人 + 结单时间 10 天后（超 7 日窗口）→ waiting
+    rec({
+      '审批节点': '回执单：是否结单',
+      '指定负责人': [{ id: 'ou_a', name: '张三' }],
+      '理想结单时间': now + 10 * DAY_MS,
+      '需求': '超7日窗口工单',
+    }, 'recWait2'),
+    // 回执节点 + 有负责人 + 未填结单时间 → waiting
+    rec({
+      '审批节点': '回执单：是否结单',
+      '指定负责人': [{ id: 'ou_a', name: '张三' }],
+      '需求': '未填结单时间工单',
+    }, 'recWait3'),
+  ];
+  const r3 = await getUnclosedByGroup();
+  ok((r3['oc_gw'].waiting || []).some((t) => t.recordId === 'recWait1' && t.handlerName === ''), 'waiting：无负责人按面向组别兜底分组');
+  const w2 = (r3['oc_zp'].waiting || []).find((t) => t.recordId === 'recWait2');
+  ok(w2 && w2.daysLeft >= 9 && w2.deadlineFormatted, 'waiting：超7日窗口进 waiting 且带结单日期');
+  const w3 = (r3['oc_zp'].waiting || []).find((t) => t.recordId === 'recWait3');
+  ok(w3 && w3.daysLeft === null && w3.deadlineFormatted === '', 'waiting：未填结单时间 daysLeft=null');
+  ok(r3['oc_zp'].urgent.length === 0 && r3['oc_zp'].week.length === 0, 'waiting：不再重复进 urgent/week');
+  ok(r3['oc_gw'].waiting[0].recordId === 'recWait1', 'waiting 排序：有结单时间的在前（本例工位区只有无日期项，无负责人项在场）');
+
   // 长需求截断 40 字
   fakeRecords = [
     rec({
