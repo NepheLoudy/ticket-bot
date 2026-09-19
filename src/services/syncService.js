@@ -52,6 +52,33 @@ function mapStatus(applyStatus, approvalNode) {
   return 'pending';
 }
 
+// 过滤公式值转义：项目名/记录键含双引号或反斜杠时，裸拼接会让过滤永久报错
+//（报错路径 = findParentProject 返回 null → 该行永久缺 parentId），故统一转义
+function escapeFilterValue(v) {
+  return String(v).replace(/(["\\])/g, '\\$1');
+}
+
+/** 字段值归一化（供 diff 门控比较：person/关联数组、文本对象、标量各归到可比较形态） */
+function normalizeFieldValue(v) {
+  if (v === null || v === undefined || v === '') return '';
+  if (Array.isArray(v)) {
+    return JSON.stringify(v.map((x) => {
+      if (x && typeof x === 'object') return String(x.record_id || x.id || x.text || x.en_us || JSON.stringify(x));
+      return String(x);
+    }).sort());
+  }
+  if (typeof v === 'object') return JSON.stringify(v);
+  return String(v);
+}
+
+/** patch 中任一字段与现有行不同（或现有行缺失该字段值）即为有差异 */
+function fieldsDiffer(existingFields, patch) {
+  return Object.entries(patch).some(([k, v]) => {
+    if (v === undefined) return false;
+    return normalizeFieldValue(existingFields && existingFields[k]) !== normalizeFieldValue(v);
+  });
+}
+
 /**
  * 在项目看板中查找父项目（根据 name 字段值匹配）
  * @param {string} parentName 父项目名称
@@ -62,7 +89,7 @@ async function findParentProject(parentName) {
 
   try {
     // 查询项目看板中 name 字段匹配的记录
-    const filter = `CurrentValue.[name] = "${parentName}"`;
+    const filter = `CurrentValue.[name] = "${escapeFilterValue(parentName)}"`;
     const records = await bitableApi.listAllRecords(
       config.bitable.targetAppToken,
       config.bitable.targetTableId,
@@ -151,7 +178,7 @@ async function buildTargetFields(sourceFields, sourceRecordId, parentRecordId) {
  * 在目标表中按「源记录ID」查找已有记录
  */
 async function findTargetRecordByKey(sourceRecordId) {
-  const filter = `CurrentValue.[${config.sync.syncKeyField}] = "${sourceRecordId}"`;
+  const filter = `CurrentValue.[${config.sync.syncKeyField}] = "${escapeFilterValue(sourceRecordId)}"`;
   const records = await bitableApi.listAllRecords(
     config.bitable.targetAppToken,
     config.bitable.targetTableId,
@@ -236,6 +263,13 @@ async function syncRecord(sourceRecord) {
     }
     Object.assign(targetFields, personPatch);
 
+    // 对账 diff 门控（2026-09-20）：字段无实质变化时跳过 update——每分钟对账此前对
+    // 全部活跃工单无条件重写目标行，白烧共用应用写配额、加剧整点限频（1254290/查找超时）。
+    // 归一化比较偏保守：形状对不上即视为有差异照常写，最坏退回原行为。
+    if (!fieldsDiffer(existing.fields, targetFields)) {
+      return { action: 'unchanged', targetRecordId: existing.record_id, parentRecordId };
+    }
+
     await bitableApi.updateRecord(
       config.bitable.targetAppToken,
       config.bitable.targetTableId,
@@ -272,6 +306,7 @@ async function syncAll() {
     matched: records.length,
     created: 0,
     updated: 0,
+    unchanged: 0,
     failed: 0,
     errors: [],
   };
@@ -296,8 +331,9 @@ async function syncAll() {
 /**
  * 缺行修补（2026-09-17）：已播报工单的搬运依赖单次事件（首播 reconcile / 更新事件），
  * 事件在重启窗口/网关抖动中丢失即永久漏搬（recvvdsjSTQoKl 事故）。每小时对 category
- * 门控记录做一次「看板缺行」巡检，只为缺行记录补跑 syncRecord——已存在的行不重写，
- * 避免自身写表触发更新事件形成回环。
+ * 门控记录做一次「看板缺行/缺父项目」巡检（2026-09-20 扩展：行在但 parentId 空——
+ * 查找父项目超时恰发生在最后一次同步时该关联会长期缺失——也补跑 syncRecord）。
+ * 已齐全的行不重写，避免自身写表触发更新事件形成回环。
  */
 async function repairMissingTargets() {
   const allRecords = await bitableApi.listAllRecords(
@@ -310,10 +346,11 @@ async function repairMissingTargets() {
   for (const rec of gated) {
     try {
       const existing = await findTargetRecordByKey(rec.record_id);
-      if (existing) continue;
+      const hasParent = existing && Array.isArray(existing.fields.parentId) && existing.fields.parentId.length > 0;
+      if (existing && hasParent) continue;
       const r = await syncRecord(rec);
       repaired.push({ recordId: rec.record_id, action: r.action, targetRecordId: r.targetRecordId });
-      console.log(`[同步服务] 缺行修补: ${rec.record_id} → ${r.targetRecordId}`);
+      console.log(`[同步服务] 缺行修补: ${rec.record_id} → ${r.targetRecordId}${existing && !hasParent ? '（补 parentId）' : ''}`);
     } catch (err) {
       failed.push({ recordId: rec.record_id, message: err.message });
       console.error(`[同步服务] 缺行修补失败 ${rec.record_id}:`, err.message);

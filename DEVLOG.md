@@ -2,7 +2,7 @@
 
 版本隔离单位：一次 `npm run push`（= 一次 git 提交 + 一次部署）。v1~v42 于 2026-09-04 按提交历史回溯编号，此后每次 push 在文末追加新版本（规则见顶层 [AGENTS.md](../../AGENTS.md)）。
 
-当前最新：**v76**（2026-09-17，随本提交落地）。
+当前最新：**v77**（2026-09-20，随本提交落地）。
 
 ## 阶段十二 · 无人接单升级 + 结单提醒只私聊（2026-09-05）
 
@@ -485,3 +485,12 @@
 - 现场排查：直接对该工单执行 syncRecord 成功建行（recvvpZMrSGGax，并自动挂上父项目 recvvvdlIVPSMYp）——搬运逻辑本身无 bug，纯事件丢失。
 - 兜底：新增 `repairMissingTargets()` 缺行修补（syncService）+ 小时级巡检任务（`SYNC_REPAIR_SCHEDULE`，默认每小时 :15）——只对 category 门控记录做「看板缺行」检查并补跑 syncRecord，已有行不重写（防自身写表触发更新事件回环）；纯数据对账无播报，不过静默闸门。
 - 测试：stub-test-sync 扩到 17 项（补建/幂等/已有行不重写），全套 24+17+16 全绿。
+
+## v77 · 2026-09-20 · 随本提交落地 · fix
+
+**全量 debug 批：对账写放大 diff 门控 + 缺行修补扩展缺 parentId + 过滤公式转义**
+
+- **对账 diff 门控**：每分钟对账此前对每条活跃工单无条件 `updateRecord` 重写目标行——白烧共用飞书应用写配额、加剧整点限频（duty 快递表 1254290 / 本仓查父项目 15s 超时同源压力）。syncRecord 现对已存在行做归一化字段比较（保守：形状对不上即视为有差异照常写），无实质变化返回 `action:'unchanged'` 跳写；syncAll 计数补 `unchanged` 桶。
+- **缺行修补扩展「缺 parentId」**：`repairMissingTargets` 此前只补「看板缺行」——查父项目超时恰发生在工单最后一次同步时，该行的父项目关联会长期缺失（repair 的 `if (existing) continue` 跳过它）。现扩展为「缺行或缺 parentId」双条件补跑 syncRecord；parentId 齐全的行仍不重写防回环。
+- **过滤公式值转义**：`findParentProject`/`findTargetRecordByKey` 的过滤公式此前裸拼值，项目名含 `"` 时过滤永久报错 → 永久缺 parentId；统一 `escapeFilterValue` 转义。
+- 桩测试 stub-test-sync §5 升级锁新口径（齐全行不动 / 缺行补建 / 缺 parentId 补挂 / 二轮幂等）；三套 24+18+16 全过。

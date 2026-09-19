@@ -146,22 +146,25 @@ function baseFields(over = {}) {
     check('hasCategory：缺字段 → false', syncService.hasCategory({}) === false);
   }
 
-  console.log('\n== 5. 缺行修补（事件丢失兜底，2026-09-17）==');
+  console.log('\n== 5. 缺行修补（事件丢失兜底 2026-09-17；缺 parentId 修补 2026-09-20）==');
   {
-    // 源表两条 category 门控记录：r1 已在看板（预置行）、rY 从未搬运
+    // 源表三条 category 门控记录：r1 行在且 parentId 齐全、rP 行在但缺 parentId、rY 从未搬运
     targetRecords.length = 0;
-    targetRecords.push({ record_id: 't-pre1', fields: { '源记录ID': 'r1' } });
+    targetRecords.push({ record_id: 't-pre1', fields: { '源记录ID': 'r1', parentId: ['t-pre1'] } });
+    targetRecords.push({ record_id: 't-pre2', fields: { '源记录ID': 'rP' } });
     updatedCalls.length = 0;
     createdCalls.length = 0;
     sourceRecords = [
       { record_id: 'r1', fields: baseFields() },
+      { record_id: 'rP', fields: baseFields({ 申请编号: '202609200002' }) },
       { record_id: 'rY', fields: baseFields({ 申请编号: '202609170001', 补充负责人: [A] }) },
     ];
     const rep = await syncService.repairMissingTargets();
-    check('修补：扫描条数 = 门控记录数', rep.scanned === 2, JSON.stringify(rep));
-    check('修补：只为缺行记录补建 1 条', rep.repaired === 1 && createdCalls.length === 1, JSON.stringify(rep.items));
-    check('修补：补建的是缺行那条', rep.items[0] && rep.items[0].recordId === 'rY', JSON.stringify(rep.items));
-    check('修补：已有行不被重写', updatedCalls.filter((u) => u.id === 't-pre1').length === 0);
+    check('修补：扫描条数 = 门控记录数', rep.scanned === 3, JSON.stringify(rep));
+    check('修补：补建/补挂共 2 条（1 建 1 更）', rep.repaired === 2 && createdCalls.length === 1 && updatedCalls.length === 1, JSON.stringify(rep.items));
+    check('修补：补建的是缺行那条 rY', rep.items.some((i) => i.recordId === 'rY' && i.action === 'created'), JSON.stringify(rep.items));
+    check('修补：行在缺 parentId 的 rP 被补挂', rep.items.some((i) => i.recordId === 'rP' && i.action === 'updated'), JSON.stringify(rep.items));
+    check('修补：parentId 齐全的 r1 不被重写', updatedCalls.filter((u) => u.id === 't-pre1').length === 0);
     const rep2 = await syncService.repairMissingTargets();
     check('修补：幂等（第二轮零补建）', rep2.repaired === 0, JSON.stringify(rep2));
   }
