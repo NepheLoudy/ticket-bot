@@ -2,7 +2,7 @@
 
 版本隔离单位：一次 `npm run push`（= 一次 git 提交 + 一次部署）。v1~v42 于 2026-09-04 按提交历史回溯编号，此后每次 push 在文末追加新版本（规则见顶层 [AGENTS.md](../../AGENTS.md)）。
 
-当前最新：**v78**（2026-09-20，随本提交落地）。
+当前最新：**v79**（2026-09-23，随本提交落地）。
 
 ## 阶段十二 · 无人接单升级 + 结单提醒只私聊（2026-09-05）
 
@@ -495,9 +495,19 @@
 - **过滤公式值转义**：`findParentProject`/`findTargetRecordByKey` 的过滤公式此前裸拼值，项目名含 `"` 时过滤永久报错 → 永久缺 parentId；统一 `escapeFilterValue` 转义。
 - 桩测试 stub-test-sync §5 升级锁新口径（齐全行不动 / 缺行补建 / 缺 parentId 补挂 / 二轮幂等）；三套 24+18+16 全过。
 
-## v78 · 2026-09-20 · 随本提交落地 · chore
+## v78 · 2026-09-20 · 126f995 · chore
 
 **用户拍板：动态广场机器人停写（PLAZA_ENABLED 开关）**
 
 - 2026-09-20 用户拍板：动态广场相关功能由用户自维护，机器人只对各自现有业务看板负责。plaza.js `enabled()` 加 `PLAZA_ENABLED` 开关（默认关，显式设 `1` 才恢复写入）——停写后即使用户把「动态广场」表从回收站恢复/重建，机器人也不会往里灌数据；表在回收站期间的 TableIdNotFound warn 同步终结（工单播报/结单/审批通过/接单四处钩子保留代码不动，仅由开关关断）。
 - `.env.example` 补注释。三套桩测试全过。
+
+## v79 · 2026-09-23 · 随本提交落地 · fix
+
+**搬运可靠性批：parentId diff 门控修复 + 查父项目降频 + key 落库校验 + 孤儿行收养（李妍基建支持工单「长期未接单一接单搬运就坏」事故链根治）**
+
+- **事故复盘（现场取证）**：李妍的基建支持工单（202609150001/大符/recvvdsjSTQoKl）看板上有两条（基建支持项目）行——正行（带源记录ID）09-17 手动补建后一切正常；**无 key 孤儿行**（recvvdsr2W2lbO，09-15 01:18 播报当刻由对账同步创建）永卡 waiting，查重永远查不到它，还卡住 pm-robot「children 全完成→父项目收尾」判定（父项目大符至今 in_progress）。v76「纯事件丢失」的结论不成立：行当时就建了，只是 key 未落库导致查重不可见（飞书 createRecord 对不存在字段是整单报错 1254045、不会静默忽略，故 key 缺失只能发生在写入链路之外的环境因素——旧日志已轮转无法定案到唯一原因）。同形态孤儿行共 3 条（202608310001/202609040001/202609150001 各一）。
+- **活体病灶（error log 实锤）**：v77 的对账 diff 门控被 parentId 归一化不对称击穿——关联字段读回是 `{record_ids,text}` 对象、补丁侧是裸 record id，归一化结果永不相等 → 每分钟无条件 updateRecord 重写看板行（recvviSwpIJa7C 每分钟一条 updated 日志）→ 共享 base 被自家写满 → 1254607 Data not ready / 查父项目 15s 超时风暴，**接单瞬间的搬运调用（updateProjectStatus/人员写入）跟着超时 = 用户侧「一接单搬运就坏」**。
+- **修复（syncService）**：① normalizeFieldValue 摊平关联字段 record_ids 再比，已挂对父项目的行零写操作；② 查重先行 + 父项目查找仅在建行/缺 parentId/父项目改名（已挂 text ≠ 源 name）时执行，每分钟对账不再重查；③ 建行后读回校验 key 确已落库，缺失当场 force 补建字段+补写并打 ⚠️ 告警（ensureKeyField 支持 force，失败不再静默闩死）；④ 建行前收养无 key 孤儿行（同名+key 空+ddl/fileToken/category/父项目严格匹配，防认错行），补 key 后按最新源数据补字段——`action:'adopted'`，syncAll 计数带 adopted 桶。
+- **测试**：stub-test-sync 17→31 项（parentId 门控回归/查父项目零调用断言/丢 key 模拟补写/孤儿收养正反例/syncAll adopted 桶；桩升级：bitable 按 name 过滤、createRecord 返回真实读回形态）。三套 31+24+16 全绿。
+- **待办（用户确认后执行）**：看板 3 条存量孤儿行（recvtNL9QOO5fh / recvuaW3GMsSYk / recvvdsr2W2lbO）各自已有带 key 正行，属纯垃圾重复行，删除需用户点头（运行时数据保护铁律）。

@@ -62,9 +62,15 @@ function escapeFilterValue(v) {
 function normalizeFieldValue(v) {
   if (v === null || v === undefined || v === '') return '';
   if (Array.isArray(v)) {
-    return JSON.stringify(v.map((x) => {
-      if (x && typeof x === 'object') return String(x.record_id || x.id || x.text || x.en_us || JSON.stringify(x));
-      return String(x);
+    return JSON.stringify(v.flatMap((x) => {
+      if (x && typeof x === 'object') {
+        // 关联字段（parentId）读回形态是 {record_ids:[...], text:...}——必须摊平成 record id
+        // 再比，否则与补丁侧的裸 id 数组永不相等，diff 门控被击穿 → 每分钟重写看板行
+        // （共享 base 被自家写满 → 1254607/查父项目 15s 超时风暴，2026-09-23 事故）
+        if (Array.isArray(x.record_ids)) return x.record_ids.map(String);
+        return [String(x.record_id || x.id || x.text || x.en_us || JSON.stringify(x))];
+      }
+      return [String(x)];
     }).sort());
   }
   if (typeof v === 'object') return JSON.stringify(v);
@@ -191,8 +197,8 @@ async function findTargetRecordByKey(sourceRecordId) {
  * 确保目标表存在「源记录ID」查重字段（缺失时创建，仅尝试一次）
  */
 let keyFieldReady = false;
-async function ensureKeyField() {
-  if (keyFieldReady) return;
+async function ensureKeyField({ force = false } = {}) {
+  if (keyFieldReady && !force) return;
   try {
     await bitableApi.createField(
       config.bitable.targetAppToken,
@@ -201,32 +207,93 @@ async function ensureKeyField() {
     );
     console.log(`[同步服务] 已在目标表创建查重字段「${config.sync.syncKeyField}」`);
   } catch (err) {
-    // 字段已存在或创建失败：不阻断后续同步（已存在时 upsert 依赖的字段可用）
+    // 字段已存在等场景视作就绪；真正的写入失败会在 syncRecord 的 key 落库校验暴露并重试
+    //（force 路径 = key 未落库后的补救，失败不再静默闩死）
+    if (force) console.error(`[同步服务] 补建查重字段「${config.sync.syncKeyField}」失败:`, err.message);
   }
-  keyFieldReady = true;
+  if (!force) keyFieldReady = true;
+}
+
+/**
+ * 收养无 key 孤儿行：同名（（category支持项目））且「源记录ID」为空的历史行，
+ * 再按 ddl/fileToken/category/父项目严格匹配确认是同一工单的遗留（防止认错行）。
+ * 背景：2026-09-15 前后看板上出现过建行时 key 未落库的孤儿行——查重永远查不到它，
+ * 之后的每次同步都会再建一条（李妍基建支持工单即此：正行 completed、孤儿行永卡 waiting，
+ * 还卡住 pm-robot「children 全完成→父项目收尾」判定）。收养=补上 key，不再造重复行。
+ */
+async function findUnkeyedTwin(sourceFields, parentRecordId) {
+  const category = sourceFields['category'];
+  if (!category) return null;
+  const name = `（${category}支持项目）`;
+  const filter = `CurrentValue.[name] = "${escapeFilterValue(name)}"`;
+  const records = await bitableApi.listAllRecords(
+    config.bitable.targetAppToken,
+    config.bitable.targetTableId,
+    filter
+  );
+
+  const sourceDdl = sourceFields[config.closeReminder.deadlineField]
+    ? Number(toDateOnlyTimestamp(sourceFields[config.closeReminder.deadlineField]))
+    : null;
+  const sourceToken = sourceFields['需求'] || sourceFields['需求1'] || null;
+
+  const twins = (records || []).filter((r) => {
+    const f = r.fields;
+    if (f[config.sync.syncKeyField]) return false; // 已有 key 的行不是孤儿
+    if (normalizeFieldValue(f['category']) !== normalizeFieldValue(category)) return false;
+    if (sourceDdl !== null && Number(f['ddl']) !== sourceDdl) return false;
+    if (sourceDdl === null && f['ddl']) return false;
+    if (normalizeFieldValue(f['fileToken']) !== normalizeFieldValue(sourceToken)) return false;
+    const parentIds = Array.isArray(f['parentId']) ? f['parentId'].flatMap((p) => {
+      if (p && typeof p === 'object') return (p.record_ids || [p.record_id || p.id].filter(Boolean)).map(String);
+      return [String(p)];
+    }) : [];
+    if (parentRecordId && !parentIds.includes(String(parentRecordId))) return false;
+    return true;
+  });
+  return twins[0] || null;
 }
 
 /**
  * 同步单条工单记录到项目看板
  * @param {{record_id: string, fields: object}} sourceRecord
- * @returns {Promise<{action: 'created'|'updated', targetRecordId: string, parentRecordId: string|null}>}
+ * @returns {Promise<{action: 'created'|'updated'|'adopted', targetRecordId: string, parentRecordId: string|null}>}
  */
 async function syncRecord(sourceRecord) {
   await ensureKeyField();
 
   const { record_id, fields } = sourceRecord;
 
-  // 1. 查找父项目（name 字段值）
-  const parentName = fields['name'];
-  const parentRecordId = await findParentProject(parentName);
+  // 1. 查重先行（旧流程先查父项目——已挂对父项目的行也被每分钟对账重查+重写，
+  //    而查父项目正是超时/限频重灾区，还白烧共享应用配额）
+  const existing = await findTargetRecordByKey(record_id);
 
-  // 2. 构造目标字段（2026-09-13 口径：指定负责人公示时即写入「补充负责人」，专项搬运废止，
+  // 2. 父项目查找：仅建行 / 行缺 parentId / 已挂父项目与源 name 不符（父项目改名）时执行；
+  //    已挂对的行不重查也不重写
+  const sourceParentName = fields['name'] !== null && fields['name'] !== undefined ? String(fields['name']) : '';
+  const rawParent = Array.isArray(existing?.fields?.parentId) ? existing.fields.parentId[0] : null;
+  const existingParentId = rawParent === null || rawParent === undefined
+    ? null
+    : (typeof rawParent === 'string'
+      ? rawParent
+      : (Array.isArray(rawParent.record_ids) ? rawParent.record_ids[0] : (rawParent.record_id || rawParent.id || null)));
+  const existingParentText = rawParent && typeof rawParent === 'object' ? String(rawParent.text || '') : '';
+  let parentRecordId = null;
+  if (
+    !existing
+    || !existingParentId
+    || (existingParentText && sourceParentName && existingParentText !== sourceParentName)
+  ) {
+    parentRecordId = await findParentProject(sourceParentName);
+  }
+
+  // 3. 构造目标字段（2026-09-13 口径：指定负责人公示时即写入「补充负责人」，专项搬运废止，
   //    看板人员一律来自补充负责人；项目性质（category）门控在 syncIfAllowed 已判，此处不重复）
   //    面向组别走 ROUTE_FIELD 配置（未配置回落历史字段名，保持旧行为）
   const routeGroups = fields[config.broadcast.routeField || '面向组别'] || null;
   const targetFields = await buildTargetFields(fields, record_id, parentRecordId);
 
-  // 2.5 补充负责人全员（公示即绑定的指定负责人 + 所有接单人）按各自所属组别并入人员字段；
+  // 3.5 补充负责人全员（公示即绑定的指定负责人 + 所有接单人）按各自所属组别并入人员字段；
   //     同字段多人用 mergePersonFields 并集（buildPersonFieldsByGroups 单人产物直接 Object.assign 会互覆）
   //     字段名走 SUPPLEMENT_ASSIGNEE_FIELD 配置（config 默认即「补充负责人」）
   const supplements = Array.isArray(fields[config.assign.supplementField]) ? fields[config.assign.supplementField] : [];
@@ -238,9 +305,8 @@ async function syncRecord(sourceRecord) {
   }
   Object.assign(targetFields, supplementFields);
 
-  // 3. 查重 upsert（status 只向前推进，防止把业务事件状态重置回 waiting；
+  // 4. 查重 upsert（status 只向前推进，防止把业务事件状态重置回 waiting；
   //     人员字段与看板已有值合并，避免对账把接单写入的人冲掉）
-  const existing = await findTargetRecordByKey(record_id);
   if (existing) {
     // priority 仅创建时写默认 low：update 不重提，人工/pm-robot 的优先级编辑不被每分钟对账打回
     // （与 ddl/fileToken/category「有值才带」同款处理；新单默认值仍由 buildTargetFields 提供）
@@ -279,11 +345,46 @@ async function syncRecord(sourceRecord) {
     return { action: 'updated', targetRecordId: existing.record_id, parentRecordId };
   }
 
+  // 5. 建行前先找「无 key 孤儿行」收养：同一工单此前建行时 key 未落库的话，
+  //    查重永远查不到它，直接 create 会再长一条重复行——补上 key 收编旧行
+  const twin = await findUnkeyedTwin(fields, parentRecordId);
+  if (twin) {
+    await bitableApi.updateRecord(
+      config.bitable.targetAppToken,
+      config.bitable.targetTableId,
+      twin.record_id,
+      { [config.sync.syncKeyField]: record_id }
+    );
+    console.log(`[同步服务] 收养无 key 孤儿行: ${record_id} → ${twin.record_id}（补写查重 key，不再新建）`);
+    // 收养后立刻按最新源数据补一次字段（孤儿行停在历史状态，如永卡 waiting）
+    await bitableApi.updateRecord(
+      config.bitable.targetAppToken,
+      config.bitable.targetTableId,
+      twin.record_id,
+      targetFields
+    );
+    return { action: 'adopted', targetRecordId: twin.record_id, parentRecordId };
+  }
+
   const created = await bitableApi.createRecord(
     config.bitable.targetAppToken,
     config.bitable.targetTableId,
     targetFields
   );
+
+  // 6. key 落库校验：任何原因（字段缺失/权限/环境快照旧值）没写上 = 该行从此对查重不可见，
+  //    下一轮同步必再建一条重复行（2026-09-15 前后孤儿行的事故形态）——当场补建字段+补写并大声报警
+  const createdKey = created?.fields?.[config.sync.syncKeyField];
+  if (createdKey === undefined || createdKey === null || String(createdKey) !== record_id) {
+    console.error(`[同步服务] ⚠️ 新建行 ${created?.record_id} 的查重 key「${config.sync.syncKeyField}」未落库（读回 ${JSON.stringify(createdKey ?? null)}），尝试补写: ${record_id}`);
+    await ensureKeyField({ force: true });
+    await bitableApi.updateRecord(
+      config.bitable.targetAppToken,
+      config.bitable.targetTableId,
+      created.record_id,
+      { [config.sync.syncKeyField]: record_id }
+    );
+  }
   return { action: 'created', targetRecordId: created.record_id, parentRecordId };
 }
 
@@ -306,6 +407,7 @@ async function syncAll() {
     matched: records.length,
     created: 0,
     updated: 0,
+    adopted: 0,
     unchanged: 0,
     failed: 0,
     errors: [],

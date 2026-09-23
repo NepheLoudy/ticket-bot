@@ -20,6 +20,8 @@ const targetRecords = []; // 看板表内存镜像
 let sourceRecords = []; // 工单源表内存镜像（缺行修补用例）
 const createdCalls = [];
 const updatedCalls = [];
+const parentLookups = []; // findParentProject 的 name 过滤调用记录（对账压力断言用）
+let createDropKey = false; // 模拟建行时 key 未落库（返回体剔除 key）
 
 const stubs = {
   [path.join(ROOT, 'src/feishu/bitable.js')]: {
@@ -32,6 +34,13 @@ const stubs = {
           return key && filter.includes(`"${key}"`);
         });
       }
+      if (typeof filter === 'string' && filter.includes('CurrentValue.[name]')) {
+        // 父项目/孤儿行过滤：CurrentValue.[name] = "xxx"（findParentProject 语义）
+        parentLookups.push(filter);
+        const m = filter.match(/CurrentValue\.\[name\] = "((?:[^"\\]|\\.)*)"/);
+        const wanted = m ? m[1].replace(/\\(["\\])/g, '$1') : null;
+        return targetRecords.filter((r) => r.fields.name !== undefined && String(r.fields.name) === wanted);
+      }
       return targetRecords.map((r) => ({ ...r }));
     },
     getRecord: async (appToken, tableId, id) => {
@@ -41,10 +50,16 @@ const stubs = {
     },
     createRecord: async (appToken, tableId, fields) => {
       const id = `t${targetRecords.length + 1}`;
-      const rec = { record_id: id, fields: { ...fields } };
+      const stored = { ...fields };
+      const returned = { ...fields };
+      if (createDropKey) {
+        delete returned['源记录ID']; // 模拟 key 未落库（读回体里没有）
+        delete stored['源记录ID'];
+      }
+      const rec = { record_id: id, fields: stored };
       targetRecords.push(rec);
       createdCalls.push(rec);
-      return { record_id: id };
+      return { record_id: id, fields: returned };
     },
     updateRecord: async (appToken, tableId, id, fields) => {
       const rec = targetRecords.find((r) => r.record_id === id);
@@ -150,6 +165,7 @@ function baseFields(over = {}) {
   {
     // 源表三条 category 门控记录：r1 行在且 parentId 齐全、rP 行在但缺 parentId、rY 从未搬运
     targetRecords.length = 0;
+    targetRecords.push({ record_id: 'tpar', fields: { name: '测试项目' } }); // 父项目行（name 过滤命中）
     targetRecords.push({ record_id: 't-pre1', fields: { '源记录ID': 'r1', parentId: ['t-pre1'] } });
     targetRecords.push({ record_id: 't-pre2', fields: { '源记录ID': 'rP' } });
     updatedCalls.length = 0;
@@ -167,6 +183,105 @@ function baseFields(over = {}) {
     check('修补：parentId 齐全的 r1 不被重写', updatedCalls.filter((u) => u.id === 't-pre1').length === 0);
     const rep2 = await syncService.repairMissingTargets();
     check('修补：幂等（第二轮零补建）', rep2.repaired === 0, JSON.stringify(rep2));
+  }
+
+  console.log('\n== 6. parentId diff 门控修复（2026-09-23：每分钟重写风暴回归）==');
+  {
+    // 真实 API 读回形态：parentId 是 {record_ids:[...], text:...} 对象数组——
+    // 旧归一化拿 text 与补丁侧裸 record id 比，永不相等 → 每分钟无条件重写看板行
+    targetRecords.length = 0;
+    targetRecords.push({ record_id: 'tpar6', fields: { name: '测试项目' } });
+    targetRecords.push({
+      record_id: 't-r6',
+      fields: {
+        '源记录ID': 'r6',
+        name: '（支持项目支持项目）',
+        category: '支持项目',
+        status: 'waiting',
+        priority: 'low',
+        parentId: [{ record_ids: ['tpar6'], text: '测试项目', table_id: 'tgt', type: 'text' }],
+        owner: [{ id: 'ou_me' }],
+      },
+    });
+    updatedCalls.length = 0;
+    createdCalls.length = 0;
+    parentLookups.length = 0;
+    const rec6 = { record_id: 'r6', fields: baseFields({ 补充负责人: [A] }) };
+    const res6 = await syncService.syncRecord(rec6);
+    check('已挂对父项目的行 → unchanged（diff 门控不再被 parentId 击穿）', res6.action === 'unchanged', JSON.stringify(res6));
+    check('不再重查父项目（每分钟对账的 API 压力主源）', parentLookups.length === 0, JSON.stringify(parentLookups));
+    check('零写操作（每分钟重写风暴修复）', updatedCalls.length === 0 && createdCalls.length === 0, JSON.stringify(updatedCalls));
+
+    // 父项目改名：已挂父项目 text 与源 name 不符 → 重查并重挂
+    targetRecords.push({ record_id: 'tpar6b', fields: { name: '测试项目2' } });
+    const rec6b = { record_id: 'r6', fields: baseFields({ name: '测试项目2', 补充负责人: [A] }) };
+    const res6b = await syncService.syncRecord(rec6b);
+    const reParent = updatedCalls.find((u) => u.id === 't-r6');
+    check('父项目名变了 → 重查并重挂新父项目', res6b.action === 'updated' && String(reParent?.fields?.parentId?.[0]) === 'tpar6b', JSON.stringify(reParent));
+  }
+
+  console.log('\n== 7. 建行 key 落库校验（2026-09-23：孤儿行根治）==');
+  {
+    targetRecords.length = 0;
+    createdCalls.length = 0;
+    updatedCalls.length = 0;
+    createDropKey = true; // 模拟建行时 key 未落库（字段缺失/权限抖动/环境快照旧值）
+    const rec7 = { record_id: 'r7', fields: baseFields({ category: '基建', 需求: '需求文本7', 理想结单时间: 1790179200000 }) };
+    const res7 = await syncService.syncRecord(rec7);
+    check('建行成功', res7.action === 'created', JSON.stringify(res7));
+    const backfill = updatedCalls.find((u) => u.id === res7.targetRecordId && u.fields['源记录ID'] === 'r7');
+    check('检测到 key 未落库并当场补写', !!backfill, JSON.stringify(updatedCalls));
+    const row7 = targetRecords.find((t) => t.record_id === res7.targetRecordId);
+    check('最终 key 已落库（下一轮可查重）', row7?.fields['源记录ID'] === 'r7', JSON.stringify(row7?.fields));
+    createDropKey = false;
+    const res7b = await syncService.syncRecord(rec7);
+    check('下一轮同步查重命中（不再建重复行）', (res7b.action === 'updated' || res7b.action === 'unchanged') && res7b.targetRecordId === res7.targetRecordId, JSON.stringify(res7b));
+  }
+
+  console.log('\n== 8. 无 key 孤儿行收养（2026-09-23：存量孤儿不再繁衍重复行）==');
+  {
+    targetRecords.length = 0;
+    targetRecords.push({ record_id: 'tpar8', fields: { name: '测试项目' } });
+    targetRecords.push({
+      record_id: 't-orphan',
+      fields: {
+        name: '（基建支持项目）', category: '基建', status: 'waiting',
+        ddl: 1790179200000, fileToken: '需求文本9',
+        parentId: [{ record_ids: ['tpar8'], text: '测试项目', table_id: 'tgt', type: 'text' }],
+      },
+    });
+    createdCalls.length = 0;
+    updatedCalls.length = 0;
+    const rec8 = { record_id: 'r9', fields: baseFields({ category: '基建', 需求: '需求文本9', 理想结单时间: 1790179200000, 补充负责人: [A] }) };
+    const res8 = await syncService.syncRecord(rec8);
+    check('同工单遗留孤儿行 → adopted 不新建', res8.action === 'adopted' && createdCalls.length === 0, JSON.stringify({ res: res8, created: createdCalls.length }));
+    check('孤儿行已补查重 key', targetRecords.find((t) => t.record_id === 't-orphan')?.fields['源记录ID'] === 'r9');
+    const adopted = targetRecords.find((t) => t.record_id === 't-orphan');
+    check('收养后按最新源数据补字段（人员并入）', personIds(adopted.fields, 'owner').includes('ou_me'), JSON.stringify(adopted.fields));
+
+    // 严格匹配不认错行：fileToken 不同 → 不收养，照常新建
+    targetRecords.push({
+      record_id: 't-orphan2',
+      fields: { name: '（基建支持项目）', category: '基建', ddl: 1790179200000, fileToken: '别的需求', parentId: ['tpar8'] },
+    });
+    const rec8b = { record_id: 'r9b', fields: baseFields({ category: '基建', 需求: '需求文本9b', 理想结单时间: 1790179200000 }) };
+    const res8b = await syncService.syncRecord(rec8b);
+    check('严格匹配不认错行：fileToken 不同 → 照常新建', res8b.action === 'created', JSON.stringify(res8b));
+  }
+
+  console.log('\n== 9. syncAll 计数带 adopted 桶 ==');
+  {
+    targetRecords.length = 0;
+    targetRecords.push({ record_id: 'tpar9', fields: { name: '测试项目' } });
+    targetRecords.push({
+      record_id: 't-orphan9',
+      fields: { name: '（基建支持项目）', category: '基建', ddl: 1790179200000, fileToken: '别的需求', parentId: ['tpar9'] },
+    });
+    sourceRecords = [
+      { record_id: 'r10', fields: baseFields({ category: '基建', 需求: '别的需求', 理想结单时间: 1790179200000 }) },
+    ];
+    const all = await syncService.syncAll();
+    check('syncAll 计数含 adopted=1', all.adopted === 1, JSON.stringify(all));
   }
 
   console.log(`\n结果：${pass} 通过 / ${fail} 失败`);

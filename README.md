@@ -120,6 +120,13 @@
 | 宣运组 | `xycontributers` |
 | 管理层 | `owner` |
 
+**搬运可靠性（2026-09-23 批，李妍基建支持工单事故链根治）**：
+
+- **diff 门控 parentId 修复**：关联字段读回形态是 `{record_ids,text}` 对象，旧归一化拿 text 与补丁侧裸 record id 比永不相等 → v77 的 diff 门控被击穿、每分钟无条件重写看板行（共享 base 被自家写满 → 1254607/查父项目 15s 超时风暴，接单瞬间的搬运调用跟着超时=「一接单搬运就坏」）。现归一化摊平 record_ids 再比，已挂对父项目的行零写操作。
+- **父项目查找降频**：仅建行 / 行缺 parentId / 已挂父项目与源 `name` 不符（父项目改名）时才查；已挂对的行不重查也不重写。
+- **建行 key 落库校验**：create 后读回校验「源记录ID」确已写入，缺失则当场补建字段+补写并打 ⚠️ 告警——任何原因（字段被删/权限/环境快照旧值）没写上都会让该行从此对查重不可见、下轮同步必再建一条重复行。
+- **无 key 孤儿行收养**：查重未命中时先按 同名（（category支持项目））+ key 为空 + ddl/fileToken/category/父项目严格匹配 找同工单遗留行，命中则补 key 收编（`action: 'adopted'`，syncAll 计数含 adopted 桶）并按最新源数据补字段，不再繁衍重复行。
+
 ---
 
 ## 二、数据表约定
@@ -255,7 +262,7 @@ node scripts/probe-ticket.js           # 抽样工单记录
 node scripts/query-parent-projects.js  # 查询各 category 的顶层项目
 node scripts/verify-nas.js             # 核对部署目标上某条工单的播报/搬运结果（一次性排查工具；脚本名沿用历史命名）
 node scripts/stub-test-multi-accept.js # 离线桩测试：多人接单窗口/对账自愈/指定负责人确认/并发接单串行化（全外部依赖走桩）
-node scripts/stub-test-sync.js         # 离线桩测试：搬运人员口径（补充负责人全员并集/指定负责人不入看板/门控）
+node scripts/stub-test-sync.js         # 离线桩测试：搬运人员口径/parentId diff门控/key落库校验/孤儿行收养/缺行修补（全外部依赖走桩）
 ```
 
 ---
