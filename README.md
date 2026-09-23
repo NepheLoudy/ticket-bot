@@ -196,7 +196,7 @@ GROUP_LEADERS=机械组:ou_xxx,电控组:ou_yyy,...
 | `QUIET_HOURS_DISABLED` | 置 `1` 关闭静默 | 未设置 |
 | `QUIET_BACKLOG_FILE` | 积压文件路径（挪项目目录外，SFTP 部署清目录不再丢积压；目录不存在自建） | 项目根 `.quiet-backlog.json` |
 
-02:00–09:00 内定时/自动播报不直接发送：工单播报顺延且零副作用（不写播报标记，对账自动补播）；超时检查/结单提醒/确认追问整轮跳过（不计轮次、不写节流状态，09:00 整点轮次天然冲刷）；每日汇总按触发槽位登记重跑（取补发时刻数据）；多人单结束通告原样落盘卡片载荷按序补发。对话/指令回复与人工当下主动触发（`/test-*`、手动补播单条）不受限。实现见 `src/utils/quietHours.js`。
+02:00–09:00 内定时/自动播报不直接发送：工单播报顺延且零副作用（不写播报标记，对账自动补播）；超时检查/结单提醒/确认追问整轮跳过（不计轮次、不写节流状态，09:00 整点轮次天然冲刷）；多人单结束通告原样落盘卡片载荷按序补发。对话/指令回复与人工当下主动触发（`/test-*`、手动补播单条）不受限。实现见 `src/utils/quietHours.js`。
 
 ---
 
@@ -225,7 +225,6 @@ npm start          # 生产模式
 | GET | `/api/tickets/:id` | 工单详情 |
 | GET | `/api/sync/config` | 查看同步与播报配置 |
 | POST | `/api/sync` | 手动全量搬运（category 门控） |
-| POST | `/api/bot/test-summary` | 触发一次每日汇总 |
 | GET | `/api/bot/routes` | 查看群路由 |
 | GET | `/api/bot/history` | 播报历史 |
 | GET | `/api/bot/cron-status` | 定时任务状态 |
@@ -290,7 +289,7 @@ npm run push "提交说明"      # 一键部署：git 提交推送 → 部署 �
 ```
 ticket-bot/
 ├── src/
-│   ├── cron/index.js              # 每日汇总 + 超时检查 + 结单提醒 + 播报对账 + 24h 确认追问
+│   ├── cron/index.js              # 超时检查 + 结单提醒 + 播报对账 + 24h 确认追问
 │   ├── feishu/
 │   │   ├── bitable.js             # 多维表格 API（读/写/upsert）
 │   │   ├── bot.js                 # 卡片构建 + 群路由发送 + 接单/结单提醒卡片

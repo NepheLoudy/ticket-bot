@@ -2,7 +2,7 @@
 
 版本隔离单位：一次 `npm run push`（= 一次 git 提交 + 一次部署）。v1~v42 于 2026-09-04 按提交历史回溯编号，此后每次 push 在文末追加新版本（规则见顶层 [AGENTS.md](../../AGENTS.md)）。
 
-当前最新：**v80**（2026-09-24，随本提交落地）。上一版 v79（108e025，搬运可靠性批）。
+当前最新：**v81**（2026-09-24，随本提交落地）。上一版 v80（?token= 废除批）。
 
 ## 阶段十二 · 无人接单升级 + 结单提醒只私聊（2026-09-05）
 
@@ -519,3 +519,13 @@
 - 提交说明：fix: auth 废除 ?token= 查询串传参（R10② 同口径）
 - src/auth.js 删除 req.query.token 回退——token 会进访问/代理日志；gateway/duty-bot/wecom 已废，本仓为同款模板漂移收口。管理端点一律走 X-API-Token 头（运维台代理本就带头，无消费方受影响）。
 - 测试：npm test 三套桩全过（multi-accept 24 / sync 31 / unclosed 16）。
+
+### v81 · 2026-09-24 · 随本提交落地 · feat
+
+**按用户拍板移除工单每日汇总播报（CRON_SCHEDULE 从未配置启用，属休眠功能清理）**
+
+- 提交说明：feat: 移除工单每日汇总播报（用户拍板不需要）
+- 删除面：cron 的 getSummaryTargets / runSummary / runSummaryWithRetry（连带仅汇总链使用的 RETRY_CONFIG / isFrequencyLimitError / sleep）、startCronJobs 的 summaryTask 注册与 quietHours gateTask(daily_summary) 冲刷执行器、stopCronJobs 的 summaryTask 清理；bot.js 的 buildDailySummaryCard；/api/bot/test-summary 端点；/api/bot/history 的 summary 字段（无消费方）；config.cron.schedule（CRON_SCHEDULE 键）。
+- 保留：broadcastHistory（其它播报类型共用）、ticketService.getTicketStats / getPendingTickets（通用数据接口）、quietHours 的 gateTask 机制本身（工具模块，未来播报任务可复用）。
+- 文档同步：README（静默闸段落 / test-summary API 行 / 目录结构注释）、ticket-pm/LOGIC-MAP（webhook 通道说明、定时任务表、运维 API 清单、静默闸对照表）、.env.example（每日汇总段）。两份使用指南 MD/HTML 从未记载该功能，成员无感知，不需同步。
+- 测试：三套桩 71 断言全过 + 模块加载冒烟（config/cron/bot require）。

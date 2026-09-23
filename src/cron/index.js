@@ -7,7 +7,6 @@ const {
   sendCardToTarget,
   sendTextToUser,
   describeTarget,
-  buildDailySummaryCard,
   buildReannounceCard,
 } = require('../feishu/bot');
 const { formatFieldValue, formatFieldText, getCreatedTime } = require('../utils/fields');
@@ -20,11 +19,6 @@ const FIELD_INITIATOR = '发起人';
 
 const broadcastHistory = [];
 
-const RETRY_CONFIG = {
-  maxAttempts: 3,
-  initialDelay: 30 * 1000,
-  maxDelay: 5 * 60 * 1000,
-};
 
 // 超时检查配置
 const TIMEOUT_CONFIG = {
@@ -173,105 +167,7 @@ async function nudgeGroupLeaders({ record, title, groups, elapsedHours, round })
   if (sent > 0) leaderNudgeState.set(record.record_id, Date.now());
 }
 
-function isFrequencyLimitError(err) {
-  if (!err) return false;
-  const message = err.message || '';
-  return message.includes('11232') || message.includes('frequency limited');
-}
 
-function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-/**
- * 获取每日汇总的播报目标：全部路由群 + 兜底群（去重）
- */
-function getSummaryTargets() {
-  const seen = new Set();
-  const targets = [];
-  for (const target of [...config.broadcast.routes, config.broadcast.defaultTarget].filter(Boolean)) {
-    const key = target.webhookUrl || target.chatId;
-    if (!key || seen.has(key)) continue;
-    seen.add(key);
-    targets.push(target);
-  }
-  return targets;
-}
-
-/**
- * 执行一次每日汇总播报（发到所有配置的群）
- */
-async function runSummary() {
-  console.log('[每日汇总] 开始执行工单汇总播报...');
-
-  const { total, statusCount } = await ticketService.getTicketStats();
-  let pendingList = [];
-  try {
-    pendingList = await ticketService.getPendingTickets();
-  } catch (err) {
-    console.warn('[每日汇总] 获取待处理工单失败:', err.message);
-  }
-
-  console.log(`[每日汇总] 统计: 总计=${total} 待处理=${pendingList.length}`);
-
-  const card = buildDailySummaryCard({ total, statusCount }, pendingList);
-  const targets = getSummaryTargets();
-
-  if (targets.length === 0) {
-    console.log('[每日汇总] 未配置播报目标（GROUP_ROUTES/DEFAULT_CHAT_ID），跳过');
-    return { total, pendingCount: pendingList.length, sent: 0 };
-  }
-
-  const results = [];
-  for (const target of targets) {
-    try {
-      await sendCardToTarget(target, card);
-      results.push({ target: describeTarget(target), success: true });
-    } catch (err) {
-      console.error(`[每日汇总] 播报到 ${describeTarget(target)} 失败:`, err.message);
-      results.push({ target: describeTarget(target), success: false, error: err.message });
-    }
-  }
-
-  broadcastHistory.unshift({ time: new Date().toISOString(), type: 'daily_summary', total, pendingCount: pendingList.length, targets: results });
-  if (broadcastHistory.length > 50) broadcastHistory.length = 50;
-
-  console.log('[每日汇总] 汇总播报完成');
-  return { total, pendingCount: pendingList.length, sent: results.filter(r => r.success).length };
-}
-
-async function runSummaryWithRetry() {
-  let attempt = 0;
-  let lastError = null;
-
-  while (attempt < RETRY_CONFIG.maxAttempts) {
-    attempt++;
-    try {
-      return await runSummary();
-    } catch (err) {
-      lastError = err;
-      if (isFrequencyLimitError(err)) {
-        const delay = Math.min(RETRY_CONFIG.initialDelay * Math.pow(2, attempt - 1), RETRY_CONFIG.maxDelay);
-        console.warn(`[每日汇总] 第 ${attempt} 次尝试失败，频率限制，将在 ${delay / 1000} 秒后重试...`);
-        await sleep(delay);
-      } else {
-        console.error('[每日汇总] 汇总播报失败:', err);
-        break;
-      }
-    }
-  }
-
-  broadcastHistory.unshift({
-    time: new Date().toISOString(),
-    type: 'daily_summary',
-    success: false,
-    attempts: attempt,
-    error: lastError?.message || 'Unknown error',
-  });
-  if (broadcastHistory.length > 50) broadcastHistory.length = 50;
-
-  throw lastError;
-}
 
 /**
  * 超时检查：查找超过 6 小时未接单的工单
@@ -743,7 +639,6 @@ async function runTimeoutCheck() {
   }
 }
 
-let summaryTask = null;
 let timeoutTask = null;
 let closeReminderTask = null;
 let assignNudgeTask = null;
@@ -756,27 +651,6 @@ let syncRepairTask = null;
 let syncRepairRunning = false;
 
 function startCronJobs() {
-  // 每日汇总任务
-  if (config.cron.schedule) {
-    if (summaryTask) {
-      console.log('[定时任务] 每日汇总任务已存在，先停止旧任务');
-      summaryTask.stop();
-    }
-
-    summaryTask = cron.schedule(config.cron.schedule, () => {
-      console.log('[定时任务] 触发工单每日汇总');
-      // 晚间静默：窗口内积压到窗口结束整点，重跑整个汇总任务（以补发时刻数据为准）
-      quietHours.gateTask('daily_summary', quietHours.shanghaiStamp(), runSummaryWithRetry, '工单每日汇总').catch(err => {
-        console.error('[定时任务] 工单每日汇总失败:', err.message);
-      });
-    }, {
-      timezone: 'Asia/Shanghai',
-    });
-
-    console.log(`[定时任务] 工单每日汇总已启动，调度规则: ${config.cron.schedule} (Asia/Shanghai)`);
-  } else {
-    console.log('[定时任务] 未配置 CRON_SCHEDULE，不启用每日汇总播报');
-  }
 
   // 超时检查任务（每小时执行一次）
   if (timeoutTask) {
@@ -887,20 +761,14 @@ function startCronJobs() {
   console.log(`[定时任务] 搬运缺行修补已启动: ${config.sync.repairSchedule} (Asia/Shanghai)`);
 
   // 晚间静默：注册积压任务的冲刷执行器，并按启动时点调度积压补跑（有积压才调度）
-  quietHours.registerTask('daily_summary', runSummaryWithRetry);
   quietHours.initQuietHoursFlush();
 
   console.log(`[定时任务] 当前时间: ${new Date().toLocaleString('zh-CN')}`);
 
-  return { summaryTask, timeoutTask, closeReminderTask, reconcileTask };
+  return { timeoutTask, closeReminderTask, reconcileTask };
 }
 
 function stopCronJobs() {
-  if (summaryTask) {
-    summaryTask.stop();
-    summaryTask = null;
-    console.log('[定时任务] 每日汇总已停止');
-  }
   if (timeoutTask) {
     timeoutTask.stop();
     timeoutTask = null;
@@ -930,10 +798,6 @@ function stopCronJobs() {
 
 function getCronStatus() {
   return {
-    summary: {
-      running: !!summaryTask,
-      schedule: config.cron.schedule || '(未启用)',
-    },
     timeout: {
       running: !!timeoutTask,
       schedule: TIMEOUT_CONFIG.checkInterval,
@@ -958,20 +822,14 @@ function getCronStatus() {
   };
 }
 
-function getSummaryHistory() {
-  return broadcastHistory;
-}
 
 module.exports = {
   startCronJobs,
   stopCronJobs,
-  runSummary: runSummaryWithRetry,
   runTimeoutCheck,
   runCloseReminderCheck,
   runAssigneeNudgeCheck,
   getCronStatus,
-  getSummaryHistory,
-  getSummaryTargets,
   checkTimeoutTickets,
   handleTimeoutTicket,
   checkClosingTickets,

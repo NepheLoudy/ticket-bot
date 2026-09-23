@@ -8,7 +8,7 @@ const { processChatMessage } = require('./services/chatService');
 const ticketService = require('./services/ticketService');
 const syncService = require('./services/syncService');
 const unclosedService = require('./services/unclosedService');
-const { startCronJobs, runSummary, getCronStatus, getSummaryHistory, runAssigneeNudgeCheck } = require('./cron');
+const { startCronJobs, getCronStatus, runAssigneeNudgeCheck } = require('./cron');
 
 const app = express();
 
@@ -150,16 +150,6 @@ app.post('/api/sync', requireApiToken, async (req, res) => {
 
 // ---------- 播报 ----------
 
-app.post('/api/bot/test-summary', requireApiToken, async (req, res) => {
-  try {
-    const result = await runSummary();
-    res.json({ success: true, result });
-  } catch (err) {
-    console.error('测试汇总播报失败:', err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
 app.get('/api/bot/routes', (req, res) => {
   res.json({
     routeField: config.broadcast.routeField,
@@ -171,7 +161,6 @@ app.get('/api/bot/routes', (req, res) => {
 app.get('/api/bot/history', (req, res) => {
   res.json({
     broadcast: ticketService.getBroadcastHistory(),
-    summary: getSummaryHistory(),
   });
 });
 

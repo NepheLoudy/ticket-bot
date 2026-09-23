@@ -252,50 +252,6 @@ function buildTicketAssignCard(record, assignee, kw = '接单') {
   };
 }
 
-/**
- * 每日汇总卡片
- * @param {object} stats { total, statusCount: {状态: 数量} }
- * @param {Array} pendingList 待处理工单记录
- */
-function buildDailySummaryCard(stats, pendingList) {
-  const date = new Date().toLocaleDateString('zh-CN');
-
-  const statusLines = Object.entries(stats.statusCount)
-    .map(([status, count]) => `- ${status || '(未填写)'}: ${count} 条`)
-    .join('\n');
-
-  const elements = [
-    { tag: 'markdown', content: `**📊 工单每日汇总**\n${date}` },
-    { tag: 'hr' },
-    { tag: 'markdown', content: `**工单总数**: ${stats.total} 条` },
-  ];
-
-  if (statusLines) {
-    elements.push({ tag: 'markdown', content: `**状态分布**\n${statusLines}` });
-  }
-
-  if (pendingList && pendingList.length > 0) {
-    elements.push({ tag: 'hr' });
-    elements.push({
-      tag: 'markdown',
-      content: `**⏳ 待处理工单（${pendingList.length}条）**`,
-    });
-    const lines = pendingList.slice(0, 10).map((item, index) => {
-      const title = getTicketTitle(item.fields, item.record_id);
-      return `${index + 1}. ${title}`;
-    });
-    elements.push({ tag: 'markdown', content: lines.join('\n') });
-  }
-
-  return {
-    config: { wide_screen_mode: true, enable_forward: true },
-    elements,
-    header: {
-      template: (pendingList?.length || 0) > 0 ? 'orange' : 'green',
-      title: { content: '📋 工单播报', tag: 'plain_text' },
-    },
-  };
-}
 
 /**
  * 超时重问询卡片（无指定负责人时，强调还没人接单，@组长）
@@ -360,6 +316,5 @@ module.exports = {
   getTicketApprovalUrl,
   buildTicketOpenCard,
   buildTicketAssignCard,
-  buildDailySummaryCard,
   buildReannounceCard,
 };

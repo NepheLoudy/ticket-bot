@@ -248,9 +248,6 @@ const config = {
     chatIds: parseListConfig(process.env.P2P_COMMAND_CHAT_IDS),
   },
 
-  cron: {
-    schedule: process.env.CRON_SCHEDULE || '',
-  },
 };
 
 /**
