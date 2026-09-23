@@ -18,7 +18,7 @@ function requireApiToken(req, res, next) {
   if (!expected) {
     return res.status(503).json({ error: '本服务未配置 API_TOKEN，管理端点已锁定（在 .env 配置后重启生效）' });
   }
-  const provided = req.get('X-API-Token') || req.query.token || '';
+  const provided = req.get('X-API-Token') || ''; // R10②：废除 ?token= 查询串传参（token 会进访问日志/代理日志）
   if (!safeEqual(provided, expected)) {
     return res.status(403).json({ error: '鉴权失败：X-API-Token 缺失或不匹配' });
   }

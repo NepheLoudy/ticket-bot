@@ -2,7 +2,7 @@
 
 版本隔离单位：一次 `npm run push`（= 一次 git 提交 + 一次部署）。v1~v42 于 2026-09-04 按提交历史回溯编号，此后每次 push 在文末追加新版本（规则见顶层 [AGENTS.md](../../AGENTS.md)）。
 
-当前最新：**v79**（2026-09-23，随本提交落地）。
+当前最新：**v80**（2026-09-24，随本提交落地）。上一版 v79（108e025，搬运可靠性批）。
 
 ## 阶段十二 · 无人接单升级 + 结单提醒只私聊（2026-09-05）
 
@@ -511,3 +511,11 @@
 - **修复（syncService）**：① normalizeFieldValue 摊平关联字段 record_ids 再比，已挂对父项目的行零写操作；② 查重先行 + 父项目查找仅在建行/缺 parentId/父项目改名（已挂 text ≠ 源 name）时执行，每分钟对账不再重查；③ 建行后读回校验 key 确已落库，缺失当场 force 补建字段+补写并打 ⚠️ 告警（ensureKeyField 支持 force，失败不再静默闩死）；④ 建行前收养无 key 孤儿行（同名+key 空+ddl/fileToken/category/父项目严格匹配，防认错行），补 key 后按最新源数据补字段——`action:'adopted'`，syncAll 计数带 adopted 桶。
 - **测试**：stub-test-sync 17→31 项（parentId 门控回归/查父项目零调用断言/丢 key 模拟补写/孤儿收养正反例/syncAll adopted 桶；桩升级：bitable 按 name 过滤、createRecord 返回真实读回形态）。三套 31+24+16 全绿。
 - **待办（用户确认后执行）**：看板 3 条存量孤儿行（recvtNL9QOO5fh / recvuaW3GMsSYk / recvvdsr2W2lbO）各自已有带 key 正行，属纯垃圾重复行，删除需用户点头（运行时数据保护铁律）。
+
+### v80 · 2026-09-24 · 随本提交落地 · fix
+
+**auth 废除 ?token= 查询串传参（R10② 同口径，全仓复查批）**
+
+- 提交说明：fix: auth 废除 ?token= 查询串传参（R10② 同口径）
+- src/auth.js 删除 req.query.token 回退——token 会进访问/代理日志；gateway/duty-bot/wecom 已废，本仓为同款模板漂移收口。管理端点一律走 X-API-Token 头（运维台代理本就带头，无消费方受影响）。
+- 测试：npm test 三套桩全过（multi-accept 24 / sync 31 / unclosed 16）。
