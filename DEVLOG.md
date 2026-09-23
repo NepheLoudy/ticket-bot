@@ -2,7 +2,7 @@
 
 版本隔离单位：一次 `npm run push`（= 一次 git 提交 + 一次部署）。v1~v42 于 2026-09-04 按提交历史回溯编号，此后每次 push 在文末追加新版本（规则见顶层 [AGENTS.md](../../AGENTS.md)）。
 
-当前最新：**v81**（2026-09-24，随本提交落地）。上一版 v80（?token= 废除批）。
+当前最新：**v82**（2026-09-24，随本提交落地）。上一版 v81（移除工单每日汇总播报）。
 
 ## 阶段十二 · 无人接单升级 + 结单提醒只私聊（2026-09-05）
 
@@ -529,3 +529,13 @@
 - 保留：broadcastHistory（其它播报类型共用）、ticketService.getTicketStats / getPendingTickets（通用数据接口）、quietHours 的 gateTask 机制本身（工具模块，未来播报任务可复用）。
 - 文档同步：README（静默闸段落 / test-summary API 行 / 目录结构注释）、ticket-pm/LOGIC-MAP（webhook 通道说明、定时任务表、运维 API 清单、静默闸对照表）、.env.example（每日汇总段）。两份使用指南 MD/HTML 从未记载该功能，成员无感知，不需同步。
 - 测试：三套桩 71 断言全过 + 模块加载冒烟（config/cron/bot require）。
+
+## v82 · 2026-09-24 · 随本提交落地 · feat
+
+**新增未结单工单按人展开端点（负载视角，团队负载看板数据源）+ 顺手修 policy 端点 cron 残留引用**
+
+- 提交说明：feat: 新增 GET /api/tickets/workload-by-person（按人负载明细）+ policy 端点 cron 残留修复
+- **unclosedService 重构**：抽共享取数层 `collectUnclosedTickets()`（一次全量拉取+节点判定+字段提取，closing/unclaimed 两类中间结构），`getUnclosedByGroup()`（播报视角）改为消费该结构，**行为不变**——stub-test-unclosed 16 断言回归全过。
+- **新增 `getWorkloadByPerson()` + `GET /api/tickets/workload-by-person`**（pm-robot `/api/hub/workload` 聚合数据源 → 运维台「团队负载」看板，2026-09-24 三仓联动批）：urgent/week/waiting 桶按同一分桶规则判定后摊到「指定∪补充负责人」每人（open_id 粒度，`persons` 键即 open_id，跨仓与项目表人员对齐的主键）；与播报视角的口径差异（勿当 bug）：①**不做播报路由过滤**——管理层等无路由工单的负责人照样计负载不丢弃；②无负责人回执单进 `orphanTickets`（带面向组别）；③每人输出组别并集（resolvePersonGroups 同款解析）；④tickets 带 `createdMs/deadlineMs/daysLeft/shareCount`——shareCount=负责人总数，供消费侧多人摊薄。
+- **policy 端点修复（v81 遗留）**：v81 删除 `config.cron`（CRON_SCHEDULE）后 `/api/tickets/policy` 仍引用 `config.cron.schedule` 必抛 TypeError → 500（运维台活跃看板 ticket 域一直探测失败）。改为 `getCronStatus()`（真实定时任务全景：timeout/closeReminder/assignNudge 的 running/schedule/config）。
+- 测试：`scripts/stub-test-workload.js` 18 断言（按人摊派/指定∪补充去重/shareCount/无路由不丢单/unclaimed 单列/组别解析/时效原料透传），挂入 `npm test` 链（push.js 闸门自动覆盖）；全套 4 套桩全过。README（API 行+脚本工具+测试说明）同步。

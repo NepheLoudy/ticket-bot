@@ -66,7 +66,7 @@ app.get('/api/tickets/policy', (req, res) => {
     groupLeaders: [...config.groupLeaders.keys()],
     ignoreChatIds: config.ignoreChatIds,
     p2pCommandAllow: { openIdCount: config.p2pCommandAllow.openIds.length, chatIdCount: config.p2pCommandAllow.chatIds.length },
-    cron: { schedule: config.cron.schedule },
+    cron: getCronStatus(),
   });
 });
 
@@ -79,6 +79,18 @@ app.get('/api/tickets/unclosed-by-group', async (req, res) => {
     res.json({ result });
   } catch (err) {
     console.error('[API] 未结单工单分组查询失败:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 未结单工单按人展开（open_id 粒度），供 pm-robot 负载评分聚合（运维台团队负载看板数据源）。
+// 与播报视角的口径差异（不做路由过滤、无负责人单不挂人）见 unclosedService.getWorkloadByPerson 注释
+app.get('/api/tickets/workload-by-person', async (req, res) => {
+  try {
+    const result = await unclosedService.getWorkloadByPerson();
+    res.json({ result });
+  } catch (err) {
+    console.error('[API] 未结单工单按人查询失败:', err);
     res.status(500).json({ error: err.message });
   }
 });
