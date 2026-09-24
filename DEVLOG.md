@@ -548,7 +548,7 @@
 - `getWorkloadByPerson()` 的 tickets 明细项补 `groups` 字段（=该单「面向组别」routeGroups）：pm-robot 负载评分的组别系数（宣运组 ×0.5 等）按**单级**组别判定，此前只有 person 级组别并集、单级无原料。只动自家新端点（v82），不碰 unclosed-by-group（DDL 卡契约零影响）。
 - 测试：stub-test-workload.js 补断言（单级 groups 透传），全套 4 套桩全过后部署。
 
-## v84 · 2026-09-25 · 随本提交落地 · fix+docs
+## v84 · 2026-09-25 · `eba5451` · fix+docs
 
 **getCronStatus 补报搬运缺行修补任务 + 全量审查文档批**
 
