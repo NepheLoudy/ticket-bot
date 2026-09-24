@@ -134,6 +134,7 @@ function rec(fields, id) {
   ok(zs.tickets.find((t) => t.recordId === 'recU1').createdMs > 0, '时效原料透传（createdMs 在场）');
   ok(unclaimed[0].elapsedHours >= 8 && unclaimed[0].createdMs > 0, 'unclaimed 带发起时间与滞留时长');
   ok(zs.tickets.find((t) => t.recordId === 'recU1').deadlineMs > now, 'deadlineMs 毫秒值透传（消费侧时效计算原料）');
+  ok(Array.isArray(zs.tickets.find((t) => t.recordId === 'recU1').groups), '单级面向组别透传 groups（消费侧组别系数原料）');
 
   console.log(`\n结果：${pass} 通过 / 0 失败`);
   process.exit(0);
