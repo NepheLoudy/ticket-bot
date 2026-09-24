@@ -2,7 +2,7 @@
 
 版本隔离单位：一次 `npm run push`（= 一次 git 提交 + 一次部署）。v1~v42 于 2026-09-04 按提交历史回溯编号，此后每次 push 在文末追加新版本（规则见顶层 [AGENTS.md](../../AGENTS.md)）。
 
-当前最新：**v82**（2026-09-24，`6e3f348`）。上一版 v81（移除工单每日汇总播报）。
+当前最新：**v83**（2026-09-24，`45a35d2`）。上一版 v82（workload-by-person 按人端点，`6e3f348`）。
 
 ## 阶段十二 · 无人接单升级 + 结单提醒只私聊（2026-09-05）
 
@@ -539,3 +539,11 @@
 - **新增 `getWorkloadByPerson()` + `GET /api/tickets/workload-by-person`**（pm-robot `/api/hub/workload` 聚合数据源 → 运维台「团队负载」看板，2026-09-24 三仓联动批）：urgent/week/waiting 桶按同一分桶规则判定后摊到「指定∪补充负责人」每人（open_id 粒度，`persons` 键即 open_id，跨仓与项目表人员对齐的主键）；与播报视角的口径差异（勿当 bug）：①**不做播报路由过滤**——管理层等无路由工单的负责人照样计负载不丢弃；②无负责人回执单进 `orphanTickets`（带面向组别）；③每人输出组别并集（resolvePersonGroups 同款解析）；④tickets 带 `createdMs/deadlineMs/daysLeft/shareCount`——shareCount=负责人总数，供消费侧多人摊薄。
 - **policy 端点修复（v81 遗留）**：v81 删除 `config.cron`（CRON_SCHEDULE）后 `/api/tickets/policy` 仍引用 `config.cron.schedule` 必抛 TypeError → 500（运维台活跃看板 ticket 域一直探测失败）。改为 `getCronStatus()`（真实定时任务全景：timeout/closeReminder/assignNudge 的 running/schedule/config）。
 - 测试：`scripts/stub-test-workload.js` 18 断言（按人摊派/指定∪补充去重/shareCount/无路由不丢单/unclaimed 单列/组别解析/时效原料透传），挂入 `npm test` 链（push.js 闸门自动覆盖）；全套 4 套桩全过。README（API 行+脚本工具+测试说明）同步。
+
+## v83 · 2026-09-24 · `45a35d2` · feat
+
+**workload-by-person 工单明细补单级「面向组别」groups（算法升级批配套）**
+
+- 提交说明：feat: workload 端点工单明细补单级面向组别 groups（消费侧组别系数原料）
+- `getWorkloadByPerson()` 的 tickets 明细项补 `groups` 字段（=该单「面向组别」routeGroups）：pm-robot 负载评分的组别系数（宣运组 ×0.5 等）按**单级**组别判定，此前只有 person 级组别并集、单级无原料。只动自家新端点（v82），不碰 unclosed-by-group（DDL 卡契约零影响）。
+- 测试：stub-test-workload.js 补断言（单级 groups 透传），全套 4 套桩全过后部署。
