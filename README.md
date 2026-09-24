@@ -39,7 +39,7 @@
 
 **接单按群门禁（2026-09-13）**：接单类消息（含「接单」及其变式）先查该群实时接单队列——**无可接单工单的群一律静默忽略**（非工单群与当前无单的组别群不再收到「无待接单工单」/使用提示）；有单才走既有流程。
 
-接单不做任何消息轮询/回扫：群内 **@爆米花机-对话型** 并发送「接单」，feishu-gateway 把该消息事件**秒级**转发到本服务（网关路由：含「接单」且 @机器人 → ticket-bot）。@触发对话（hub）与接单回执（ticket-bot）由网关**独占路由**天然分立：含「接单」的 @ 只进 ticket-bot，其余 @ 进 hub 对话，不会重复响应。**同群并发接单按 chatId 串行化执行**（接单为「读全量→合并写补充负责人」链路，串行避免互相覆盖丢人）。
+接单不做任何消息轮询/回扫：群内 **@爆米花机-对话型** 并发送「接单」，feishu-gateway 把该消息事件**秒级**转发到本服务（网关路由：含「接单」且 @机器人 → ticket-bot）。@触发对话（hub）与接单回执（ticket-bot）由网关**独占路由**天然分立：含「接单」的 @ 只进 ticket-bot，其余 @ 进 hub 对话，不会重复响应。**并发接单全局串行化执行**（v71 起从按 chatId 收敛为全局锁——接单为「读全量→合并写补充负责人」链路，串行避免跨群同时写同一工单的边界竞态）。
 
 1. 未指定负责人的工单，任一组员确认即生效；
    已指定负责人的工单**仅限本人**确认（以源表「指定负责人」为准，他人确认会收到提示）；
@@ -232,7 +232,7 @@ npm start          # 生产模式
 | POST | `/api/bot/reconcile` | 手动触发播报对账（漏播补播/漏搬补搬） |
 | POST | `/api/bot/test-nudge` | 手动触发一次指定负责人确认追问检查（测试） |
 | GET | `/api/tickets/unclosed-by-group` | 未结单工单按负责人组别分桶（供 pm-robot DDL 分栏取数；含 🆘无人接单 `unclaimed` 桶）。字段细则：`title`=需求文本优先（需求1/需求，截 40 字）/编号兜底，`code`=申请编号；结单桶另带 `handlerName/daysLeft/deadlineFormatted`，无人接单桶另带 `elapsedHours/groups`（面向组别）。纳入口径：结单桶=回执结单节点+有指定/补充负责人+理想结单时间≤7 天（≤2 天进 urgent）；**waiting 等回执桶=回执结单节点上其余全部**（无负责人/未填结单时间/超 7 日——2026-09-17 用户口径：等回执=没做完不允许漏播，无负责人按面向组别兜底分组）；无人接单=触发节点+补充负责人空+发布≥6h；**不播**：其他节点滞留/管理层群 |
-| GET | `/api/tickets/workload-by-person` | 未结单工单按人展开（负载视角，pm-robot `/api/hub/workload` 聚合数据源→运维台「团队负载」看板）。`persons` 以 open_id 为键（`name/groups/tickets[]`，tickets 带 `bucket/daysLeft/deadlineMs/createdMs/shareCount`，shareCount=负责人总数供摊薄）；与播报视角口径差异：**不做播报路由过滤**（管理层等无路由工单的负责人照样计负载）、无负责人回执单进 `orphanTickets`、无人接单单列 `unclaimed`。分桶判定与 unclosed-by-group 一致（共享 collectUnclosedTickets 取数层，2026-09-24） |
+| GET | `/api/tickets/workload-by-person` | 未结单工单按人展开（负载视角，pm-robot `/api/hub/workload` 聚合数据源→运维台「团队负载」看板）。`persons` 以 open_id 为键（`name/groups/tickets[]`，tickets 带 `bucket/daysLeft/deadlineMs/deadlineFormatted/createdMs/shareCount/groups`——v83 起单级 `groups`=该单面向组别，供消费侧组别系数；shareCount=负责人总数供摊薄）；与播报视角口径差异：**不做播报路由过滤**（管理层等无路由工单的负责人照样计负载）、无负责人回执单进 `orphanTickets`、无人接单单列 `unclaimed`。分桶判定与 unclosed-by-group 一致（共享 collectUnclosedTickets 取数层，2026-09-24） |
 | POST | `/api/feishu/event` | 飞书事件 HTTP 回调（长连接未启用时） |
 
 ---
@@ -294,7 +294,7 @@ npm run push "提交说明"      # 一键部署：git 提交推送 → 部署 �
 ```
 ticket-bot/
 ├── src/
-│   ├── cron/index.js              # 超时检查 + 结单提醒 + 播报对账 + 24h 确认追问
+│   ├── cron/index.js              # 超时检查 + 结单提醒 + 播报对账 + 24h 确认追问 + 搬运缺行修补（每小时:15，纯数据对账不过静默闸）
 │   ├── feishu/
 │   │   ├── bitable.js             # 多维表格 API（读/写/upsert）
 │   │   ├── bot.js                 # 卡片构建 + 群路由发送 + 接单/结单提醒卡片

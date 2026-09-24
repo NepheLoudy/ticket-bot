@@ -818,6 +818,11 @@ function getCronStatus() {
       schedule: '* * * * *',
       config: '每分钟扫描触发节点工单，漏播补播/漏搬补搬',
     },
+    syncRepair: {
+      running: !!syncRepairTask,
+      schedule: config.sync.repairSchedule,
+      config: '搬运缺行修补：源表 category 有值但看板缺行的补搬运（纯数据对账，不过静默闸门）',
+    },
     quietHours: quietHours.getStatus(),
   };
 }

@@ -1,7 +1,7 @@
 # ticket-bot 开发边界（防需求发错会话）
 
 ## 本项目职能
-工单系统机器人：监听源表【27赛季】千里工单系统，按审批节点把工单播报到组别群；@机器人「接单」确认（含指定负责人私聊「接单」与 24h 未确认追问）；接单成功后**自动通过对应节点的工单审批任务**（`src/services/approvalLinkService.js`，审批侧边界见 `../../AGENTS.md` 易混裁定）；搬运到项目看板；结单提醒与超时处理；未结单工单按负责人组别分桶 API（`GET /api/tickets/unclosed-by-group`，供 pm-robot 的 DDL 分栏）。
+工单系统机器人：监听源表【27赛季】千里工单系统，按审批节点把工单播报到组别群；@机器人「接单」确认（含指定负责人私聊「接单」与 24h 未确认追问）；接单成功后**自动通过对应节点的工单审批任务**（`src/services/approvalLinkService.js`，审批侧边界见 `../../AGENTS.md` 易混裁定）；搬运到项目看板；结单提醒与超时处理；未结单工单按负责人组别分桶 API（`GET /api/tickets/unclosed-by-group`，供 pm-robot 的 DDL 分栏）与按人展开负载 API（`GET /api/tickets/workload-by-person`，供 pm-robot 团队负载/运维台看板）。
 
 
 ## 顶层规则与交互性（每次开工先读）
@@ -10,13 +10,13 @@
 
 与其它机器人/服务的交互契约（改接口前先对顶层文档）：
 - 五个机器人**共用同一个飞书应用**；长连接只属于 feishu-gateway，本项目事件一律 `FEISHU_USE_LONG_CONNECTION=false`，由网关转发到本项目的 `POST /api/feishu/event`；
-- 指令交互契约：`POST /api/chat/command`，入参 `{command, args}`，回 `{reply}`（回复由调用方——网关或 hub——代发）；
+- 指令交互：**本仓无 `POST /api/chat/command`**（五仓模板残留勿照抄）——工单域是网关直派例外，@接单与 /ticket-* 走 `POST /api/feishu/event` 事件帧，不经 hub 转发；
 - 群播报走应用机器人（对话型）IM API 优先（`chat_id`），应用机器人发送失败时回退群自定义机器人 webhook；接单确认靠 @应用机器人+「接单」的网关消息事件，指定负责人还可私聊回复「接单」确认（网关 p2p+接单 路由，秒级，无轮询回扫）；
 - 部署一律项目内 `npm run push "说明"`（规则见 qianli-deploy skill 与顶层 AGENTS.md），NAS 凭证在 .env 的 NAS_*；
 - 通用坑：@识别要兼容 mentioned_type='bot'；多维表格字段值先过 fieldText 类工具再拼字符串；express.json 建议放宽到 2mb。
 
 工作区与顶层职能速览（需求跨项目即停，走上方"发错时的规定动作"）：
-本目录（ticket-pm）= 工单+项目管理联动开发区：ticket-bot=工单域（含接单→审批自动通过）｜project-management-robot=对话枢纽+DDL（同工作区 `../project-management-robot`）。其余在顶层：approval-bot=财务审批｜bambu-print-reservation=打印预约｜feishu-gateway=事件接入｜qianli 顶层=部署/架构/整理。
+本目录（ticket-pm）= 工单+项目管理联动开发区：ticket-bot=工单域（含接单→审批自动通过）｜project-management-robot=对话枢纽+DDL（同工作区 `../project-management-robot`）。其余在顶层：approval-bot=财务审批｜bambu-print-reservation=打印预约｜duty-bot=值日+快递｜wecom-attendance-bot=企业微信考勤周报｜feishu-gateway=事件接入｜qianli 顶层=部署/架构/整理。
 
 ## 只管这些（归属信号）
 工单、接单、结单、面向组别、指定负责人、补充负责人、工单播报文案、工单表字段、搬运看板、结单提醒、工单路由（GROUP_ROUTES/USER_GROUPS）。
