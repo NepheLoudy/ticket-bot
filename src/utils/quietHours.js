@@ -26,6 +26,16 @@ const path = require('path');
 //
 // 不受限：对话回复（接单确认/指令回复）与人工当下主动触发（/test-*、手动补播
 // 单条工单）——前者是交互回路，后者是操作者明确要求立即发送。
+//
+// 导出面（保留工具及原因）：
+//   - gateTask / gatePayload：静默闸门本体——定时任务只登记槽位冲刷重跑、
+//     一次性事件载荷原样落盘补发，各仓定时播报必须过这道闸；
+//   - registerTask：为积压 task 登记冲刷执行器（冲刷时按名重跑整个任务函数），
+//     不登记的任务静默期内不得积压（进了积压也无法补跑）；
+//   - initQuietHoursFlush：启动时按积压存在与否调度补冲刷（过点即补）；
+//   - inQuietHours / nextQuietEnd / quietWindowDesc / getStatus：窗口判断、
+//     冲刷时点锚点、日志文案与运维状态查询。
+// （2026-09-26 安全审查清理：shanghaiStamp 导出无调用方，已删除）
 // ============================================================
 
 // 可用 QUIET_BACKLOG_FILE 挪到项目目录外（SFTP 部署会清空项目目录，部署即丢积压）
@@ -80,15 +90,6 @@ function nextQuietEnd(now = new Date()) {
 function quietWindowDesc() {
   const fmt = (h) => `${String(h).padStart(2, '0')}:00`;
   return `${fmt(settings.start)}–${fmt(settings.end)}`;
-}
-
-/** 上海时区的 "YYYY-MM-DD HH:mm" 戳（cron 同槽位去重键用） */
-function shanghaiStamp(now = new Date()) {
-  const p = shanghaiParts(now);
-  const shifted = new Date(now.getTime() + TZ_OFFSET_MS);
-  const mm = String(shifted.getUTCMinutes()).padStart(2, '0');
-  const hh = String(shifted.getUTCHours()).padStart(2, '0');
-  return `${p.y}-${String(p.m + 1).padStart(2, '0')}-${String(p.d).padStart(2, '0')} ${hh}:${mm}`;
 }
 
 // ---------- 积压队列（持久化） ----------
@@ -283,7 +284,6 @@ module.exports = {
   inQuietHours,
   nextQuietEnd,
   quietWindowDesc,
-  shanghaiStamp,
   gateTask,
   gatePayload,
   registerTask,

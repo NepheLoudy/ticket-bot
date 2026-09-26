@@ -939,7 +939,7 @@ async function reconcileBroadcasts() {
 /**
  * 处理工单更新事件：category 门控搬运 + 申请状态进入「审批中」时播报
  */
-async function handleRecordUpdate(recordId, fields, oldFields) {
+async function handleRecordUpdate(recordId, fields) {
   const record = await loadRecord(recordId, fields);
   console.log(`[工单事件] 工单更新: ${recordId}`);
 

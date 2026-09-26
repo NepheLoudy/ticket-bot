@@ -230,13 +230,16 @@ app.post('/api/feishu/event', async (req, res) => {
     return res.json({ challenge });
   }
 
-  // fail-closed（安全审查修复）：token 未配置时旧实现整段跳过校验（fail-open），
-  // 伪造的 im.message/approval_task 帧可直达对话处理与审批联动。改为未配置 token
-  // 一律 403 拒绝这两类业务事件帧；url_verification 握手与表格事件不受影响
-  const eventType = header?.event_type || '';
-  if (!config.feishuEvent.verificationToken
-    && (eventType === 'im.message.receive_v1' || eventType === 'approval_task')) {
-    console.error(`[HTTP回调] 未配置 FEISHU_VERIFICATION_TOKEN，拒绝 ${eventType} 事件帧（fail-closed）`);
+  // fail-closed（2026-09-26 安全审查修复）：token 未配置时旧实现整段跳过校验（fail-open），
+  // 伪造的 im.message/approval_task/bitable 表格事件帧可直达业务处理。改为未配置 token
+  // 一律 403 拒绝全部事件帧；url_verification 握手在上方已先行返回，不受影响。
+  // 核实结论（生产链路不受影响）：gateway 广播帧不带 X-API-Token HTTP 头，但
+  // feishu-gateway dispatch.js 的 withToken() 会把网关侧 FEISHU_VERIFICATION_TOKEN 注入
+  // 帧 body 的 token 字段随每帧转发（fanoutPost → postJson），本仓上方校验即比对 body
+  // token；两仓 .env 该值配置一致，已配置时网关转发的表格/审批/消息帧均照常通过校验
+  if (!config.feishuEvent.verificationToken) {
+    const eventType = header?.event_type || '';
+    console.error(`[HTTP回调] 未配置 FEISHU_VERIFICATION_TOKEN，拒绝 ${eventType || '未知类型'} 事件帧（fail-closed）`);
     return res.status(403).json({ error: 'Verification token not configured; event frames rejected' });
   }
 
@@ -315,9 +318,11 @@ app.post('/api/feishu/event', async (req, res) => {
 });
 
 function startServer() {
-  const server = app.listen(config.port, () => {
-    console.log(`🚀 ${config.bot.name}运行在 http://localhost:${config.port}`);
-    console.log(`📚 API 健康检查: http://localhost:${config.port}/api/health`);
+  // 仅回环监听（对齐 approval-bot v51）：gateway 直连与 hub 调 workload 都在本机
+  // localhost，LAN 无需直达 3003，收紧暴露面
+  const server = app.listen(config.port, '127.0.0.1', () => {
+    console.log(`🚀 ${config.bot.name}运行在 http://127.0.0.1:${config.port}（仅回环监听）`);
+    console.log(`📚 API 健康检查: http://127.0.0.1:${config.port}/api/health`);
     console.log(`🗂  源表: ${config.bitable.sourceTableId || '(未配置)'} → 目标表: ${config.bitable.targetTableId || '(未配置)'}`);
     console.log(`📡 播报路由: ${config.broadcast.routes.length} 个群${config.broadcast.defaultTarget ? ' + 兜底群' : ''}`);
   });

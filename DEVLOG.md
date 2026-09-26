@@ -2,7 +2,7 @@
 
 版本隔离单位：一次 `npm run push`（= 一次 git 提交 + 一次部署）。v1~v42 于 2026-09-04 按提交历史回溯编号，此后每次 push 在文末追加新版本（规则见顶层 [AGENTS.md](../../AGENTS.md)）。
 
-当前最新：**v84**（2026-09-25，随本提交落地）。上一版 v83（workload 单级 groups，`45a35d2`）。上一版 v82（workload-by-person 按人端点，`6e3f348`）。
+当前最新：**v85**（2026-09-26，随本提交落地）。上一版 v83（workload 单级 groups，`45a35d2`）。上一版 v82（workload-by-person 按人端点，`6e3f348`）。
 
 ## 阶段十二 · 无人接单升级 + 结单提醒只私聊（2026-09-05）
 
@@ -556,3 +556,12 @@
 - **可观测性修复**：`getCronStatus()` 漏列 syncRepairTask（每小时 :15 搬运缺行修补）——`/api/bot/cron-status` 与 `/api/tickets/policy` 的 cron 视图少报一个在跑任务，补齐（2026-09-25 全量审查发现）。
 - **文档批**：README 全局串行锁口径（v71 收敛，原写按 chatId）、workload-by-person 补 groups 字段（v83）、项目结构补搬运缺行修补；ticket-pm/LOGIC-MAP §0 架构图/§1.3/§1.4 定时任务表/§1.6 workload 契约/§3 联动契约同步、bot.js 行号引用修正；AGENTS 删本仓不存在的 /api/chat/command 模板残留、职能补 workload-by-person、速览补 duty/wecom。
 - **测试**：npm test 四套桩全过（multi-accept/sync/unclosed/workload）；改动为状态上报字段与文档，无业务分支变化。
+
+## v85 · 2026-09-26 · 随本提交落地 · fix
+
+**七仓全量审查修复批（本仓无 P0/P1）**
+
+- 提交说明：fix: 全量审查批——事件帧 fail-closed+回环监听、时区截断、内存与死代码清理
+- 安全收口：未配置 FEISHU_VERIFICATION_TOKEN 时事件帧（含 bitable 表格帧）一律 403（原表格帧不校验直接消费，LAN 伪造帧可伪造播报；已核实 gateway withToken 注入帧 body token、两仓 token 同值，fail-closed 不破坏生产链路）；listen 绑 127.0.0.1（对齐 approval-bot v51，gateway/hub 消费方均在本机）。
+- 其余：cron 私有 broadcastHistory 只写不读且部分路径无上限（慢性内存增长）→ 删除；toDateOnlyTimestamp 改固定 UTC+8 截零点（原按部署机本地时区，非 +8 主机看板 ddl 偏移一天）；quietHours 无调用方的 shanghaiStamp 删除（模块头补保留工具清单）；getTicketApprovalUrl 直读「申请编号」（原经 titleField 默认空串实读 fields[''] 审批链接从未生效）；syncService 未用导入与 handleRecordUpdate 未用形参清理。
+- 测试：四套全绿（multi-accept 24/sync 31/unclosed 16/workload 19）。

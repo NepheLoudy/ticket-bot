@@ -138,11 +138,11 @@ function buildAtTag(userId) {
 }
 
 /**
- * 工单审批界面链接：取「申请编号」超链接本身指向的审批实例链接，
- * 字段为空/非超链接时回退多维表格记录链接
+ * 工单审批界面链接：直读「申请编号」超链接本身指向的审批实例链接
+ * （与 cron 标题口径一致，不走 TITLE_FIELD 配置），字段为空/非超链接时回退多维表格记录链接
  */
 function getTicketApprovalUrl(fields, recordId) {
-  const raw = config.broadcast.titleField ? fields[config.broadcast.titleField] : '';
+  const raw = fields['申请编号'];
   if (raw && typeof raw === 'object' && raw.link) return raw.link;
   return `https://cquqianli.feishu.cn/base/${config.bitable.sourceAppToken}?table=${config.bitable.sourceTableId}&view=viewsAll&record=${recordId}`;
 }

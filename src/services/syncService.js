@@ -1,6 +1,6 @@
 const config = require('../config');
 const bitableApi = require('../feishu/bitable');
-const { normalizeForWrite, toDateOnlyTimestamp } = require('../utils/fields');
+const { toDateOnlyTimestamp } = require('../utils/fields');
 const { resolvePersonGroups, buildPersonFieldsByGroups, mergePersonFields } = require('../utils/personFields');
 
 /**

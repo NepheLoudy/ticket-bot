@@ -17,9 +17,6 @@ const quietHours = require('../utils/quietHours');
 const FIELD_HANDLER = '当前处理人';
 const FIELD_INITIATOR = '发起人';
 
-const broadcastHistory = [];
-
-
 // 超时检查配置
 const TIMEOUT_CONFIG = {
   hours: 6, // 超时阈值：6小时
@@ -282,15 +279,6 @@ async function handleTimeoutTicket(ticketInfo) {
         `如有疑问请联系管理员。`
       );
 
-      broadcastHistory.unshift({
-        time: new Date().toISOString(),
-        type: 'timeout_reminder',
-        recordId,
-        branch: 'self',
-        userId: currentHandler.id,
-        success: true,
-      });
-
       return { branch: 'self', success: true };
     } catch (err) {
       console.error(`[超时处理] 私信失败:`, err.message);
@@ -316,15 +304,6 @@ async function handleTimeoutTicket(ticketInfo) {
         `${getTicketApprovalUrl(record.fields, recordId)}\n\n` +
         `如有疑问请联系发起人或管理员。`
       );
-
-      broadcastHistory.unshift({
-        time: new Date().toISOString(),
-        type: 'timeout_reminder',
-        recordId,
-        branch: 'assigned',
-        userId: currentHandler.id,
-        success: true,
-      });
 
       return { branch: 'assigned', success: true };
     } catch (err) {
@@ -384,14 +363,6 @@ async function handleTimeoutTicket(ticketInfo) {
 
   // 至少一群发送成功才占用问询额度（全失败不消耗，下轮重试）
   if (results.some(r => r.success)) recordReask(recordId);
-
-  broadcastHistory.unshift({
-    time: new Date().toISOString(),
-    type: 'timeout_reannounce',
-    recordId,
-    branch: 'reannounce',
-    targets: results,
-  });
 
   return { branch: 'reannounce', success: results.some(r => r.success), results };
 }
@@ -569,8 +540,6 @@ async function handleAssigneeNudge({ record, assignee }) {
       `❓ 如该工单不应由你负责，请联系管理员调整。`
     );
     assignNudgeState.set(recordId, Date.now());
-    broadcastHistory.unshift({ time: new Date().toISOString(), type: 'assignee_nudge', recordId, userId: assignee.id, success: true });
-    if (broadcastHistory.length > 50) broadcastHistory.length = 50;
     console.log(`[确认追问] 已私聊负责人: ${assignee.name || ''}(${assignee.id}) ← ${recordId}`);
     return { nudged: true };
   } catch (err) {

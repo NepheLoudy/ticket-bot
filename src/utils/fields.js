@@ -64,13 +64,16 @@ function formatFieldText(value) {
 }
 
 /**
- * 将时间戳归一到当天 00:00:00（用于目标表日期字段，去掉时分秒）
+ * 将时间戳归一到当天 00:00:00（用于目标表日期字段，去掉时分秒）。
+ * 固定按 Asia/Shanghai（UTC+8，无夏令时）截零点，与全仓口径一致
+ * （写法同 quietHours 的 TZ_OFFSET_MS / ticketService 的 formatWindowDeadline）——
+ * 旧实现 setHours(0,0,0,0) 按服务器本地时区截断，部署机时区漂移会把 ddl 写偏一天
  */
+const TO_DATE_TZ_OFFSET_MS = 8 * 60 * 60 * 1000; // Asia/Shanghai 无夏令时，固定 UTC+8
 function toDateOnlyTimestamp(num) {
   if (!Number.isFinite(num)) return num;
-  const d = new Date(num);
-  d.setHours(0, 0, 0, 0);
-  return d.getTime();
+  const shifted = new Date(num + TO_DATE_TZ_OFFSET_MS);
+  return Date.UTC(shifted.getUTCFullYear(), shifted.getUTCMonth(), shifted.getUTCDate()) - TO_DATE_TZ_OFFSET_MS;
 }
 
 /**
