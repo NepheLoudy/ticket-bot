@@ -112,6 +112,67 @@ async function ensureWindowField() {
   windowFieldReady = true;
 }
 
+// ============================================================
+// 接单痕迹字段（机器人自写证据，config.acceptTraceField，默认「接单确认时间」）：
+//   接单确认链路成功时写毫秒数；对账代通过（maybeAutoApproveOnReconcile）以
+//   该字段非空为前置——补充负责人/审批节点都是队员可直接编辑的表格字段，
+//   「表编辑补负 → 下分钟对账即代通过」的审批绕过由此堵死。
+//   消息触发的即时自动通过不走此判据（有真实接单消息为证）。
+//   数字列写毫秒数（文本列写数字会被飞书拒收 1254060，同窗口截止字段的教训），
+//   预建走幂等迁移脚本 scripts/ensure-ticket-fields.js；运行时补建失败仅降级为
+//   「对账不代通过」，不阻断接单主链路。
+// ============================================================
+let acceptTraceFieldReady = false;
+
+async function ensureAcceptTraceField() {
+  if (acceptTraceFieldReady || !config.acceptTraceField) return;
+  try {
+    await bitableApi.createField(
+      config.bitable.sourceAppToken,
+      config.bitable.sourceTableId,
+      config.acceptTraceField,
+      2 // 数字（Number）：存毫秒时间戳
+    );
+    console.log(`[接单确认] 已在源表创建接单痕迹字段「${config.acceptTraceField}」（若表内已存在同名字段请忽略此日志）`);
+  } catch (err) {
+    // 字段已存在等场景视作就绪；写入失败会在 writeAcceptTrace 日志暴露
+  }
+  acceptTraceFieldReady = true;
+}
+
+/**
+ * 写接单痕迹（源表数字字段，值为确认时刻毫秒数）。
+ * @returns {Promise<boolean>} 是否写入成功——失败不阻断接单主链路，仅代价是
+ * 该单后续对账不代通过（宁缺勿滥：没有痕迹就没有表格编辑绕过审批的空间）
+ */
+async function writeAcceptTrace(recordId) {
+  const field = config.acceptTraceField;
+  if (!field) return false;
+  await ensureAcceptTraceField();
+  try {
+    await bitableApi.updateRecord(
+      config.bitable.sourceAppToken,
+      config.bitable.sourceTableId,
+      recordId,
+      { [field]: Date.now() }
+    );
+    return true;
+  } catch (err) {
+    console.error(`[接单确认] 写接单痕迹字段「${field}」失败（不影响接单，该单对账将不代通过） ${recordId}:`, err.message);
+    return false;
+  }
+}
+
+/** 读接单痕迹：兼容数字/文本/富文本段形态，解析不出正数视为无痕迹 */
+function readAcceptTrace(fields) {
+  const raw = config.acceptTraceField ? fields?.[config.acceptTraceField] : null;
+  if (raw === null || raw === undefined || raw === '') return 0;
+  const value = Array.isArray(raw) ? raw[0] : raw;
+  const text = value && typeof value === 'object' ? String(value.text || '') : String(value);
+  const num = Number(text);
+  return Number.isFinite(num) && num > 0 ? num : 0;
+}
+
 /**
  * 写窗口截止（源表文本字段，值为 ISO 文本）。
  * @returns {Promise<boolean>} 是否写入成功——失败时调用方必须降级（窗口不存在，
@@ -196,6 +257,12 @@ async function sendCardToTargets(targets, card) {
 // 窗口到期/接单后审批补通过的尝试节流（recordId -> lastAttemptTs，1h 淘汰）
 const multiApproveAttempts = new Map();
 
+// 多人单结束通告「已发」标记（recordId -> ts，24h 淘汰）：窗口到期自动通过在
+// 并行分支下可能分轮完成（部分任务通过失败，下轮对账补通过并重入本函数），
+// 不加标记会把结束通告对同一批群重发一遍——首轮已发（含静默积压已落盘）即不重发
+const multiClosedNotified = new Map();
+const MULTI_CLOSED_NOTICE_TTL = 24 * 60 * 60 * 1000;
+
 // 指定负责人本人确认的短窗重复拦截（`recordId:userId` -> ts，10 分钟淘汰）：
 // 「公示即绑定」使补负含本人无法再作「已确认」判据，这里只兜本人连点/重发；
 // TTL 短，确认后审批联动偶发失败时本人仍可稍后再试（对账不代通过指定负责人单）
@@ -217,6 +284,16 @@ async function maybeAutoApproveOnReconcile(record) {
 
   const supplement = config.assign.supplementField ? (f[config.assign.supplementField] || []) : [];
   if (supplement.length === 0) return null; // 还没人接单，不涉及审批联动
+
+  // 接单痕迹前置（信任模型修复）：该行必须有机器人自写的「接单确认时间」
+  // （接单确认链路成功时写入的毫秒数）才允许代通过。补充负责人/审批节点都是
+  // 队员可直接编辑的字段——只凭「补负非空+节点在触发值」对账代通过，等于
+  // 表格里改两个格子就能绕过审批。无痕迹 → 本轮不动作（真实接单走消息路径
+  // 即时通过，不受影响；痕迹写入失败的存量单由人工在审批界面处理）
+  if (!readAcceptTrace(f)) {
+    console.log(`[对账] 工单 ${record.record_id} 无接单痕迹（${config.acceptTraceField} 为空），对账不代通过（如确已接单请重发接单确认或在审批界面处理）`);
+    return null;
+  }
 
   const assignValue = config.assign.field ? f[config.assign.field] : '';
   const assignee = config.assign.assigneeField ? (f[config.assign.assigneeField]?.[0] || null) : null;
@@ -252,6 +329,15 @@ async function maybeAutoApproveOnReconcile(record) {
     if (!result.done) {
       console.log(`[多人接单] 窗口到期自动通过未完成（下轮重试）: ${result.reason || ''}`);
       return null;
+    }
+    // 结束通告只发一次（内存标记按 recordId）：首轮发送/落盘后，若因部分审批
+    // 任务未通过导致下轮对账重入补通过，不再对同一批群重发结束通告
+    pruneExpired(multiClosedNotified, MULTI_CLOSED_NOTICE_TTL);
+    const alreadyNotified = multiClosedNotified.has(record.record_id);
+    multiClosedNotified.set(record.record_id, Date.now());
+    if (alreadyNotified) {
+      console.log(`[多人接单] 窗口结束，结束通告此前已发，本轮仅补通过剩余审批任务: ${record.record_id}`);
+      return 'multi-closed';
     }
     const targets = await collectMultiNoticeTargets(f, supplement, null);
     const closedCard = buildMultiAcceptClosedCard({
@@ -501,16 +587,25 @@ async function markBroadcast(recordId, scene) {
   const markField = config.broadcast.markField;
   if (!markField) return;
   await ensureMarkField();
-  try {
-    const stamp = `${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false })} ${scene}`;
-    await bitableApi.updateRecord(
-      config.bitable.sourceAppToken,
-      config.bitable.sourceTableId,
-      recordId,
-      { [markField]: stamp }
-    );
-  } catch (err) {
-    console.error(`[工单事件] 写入播报标记失败 ${recordId}:`, err.message);
+  const stamp = `${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false })} ${scene}`;
+  // 失败重试一次：播报标记是跨重启防重播的唯一依据，写失败意味着重启/对账后
+  // 会重播同一工单；两次仍失败升级为 ⚠️ 告警（人工可通过标记字段手工补写）
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      await bitableApi.updateRecord(
+        config.bitable.sourceAppToken,
+        config.bitable.sourceTableId,
+        recordId,
+        { [markField]: stamp }
+      );
+      return;
+    } catch (err) {
+      if (attempt < 2) {
+        console.warn(`[工单事件] 写入播报标记失败（重试一次） ${recordId}:`, err.message);
+        continue;
+      }
+      console.error(`[工单事件] ⚠️ 写入播报标记失败（已重试仍失败，重启/对账后该单可能重播） ${recordId}:`, err.message);
+    }
   }
 }
 
@@ -1158,18 +1253,10 @@ async function handleAcceptOrderLocked(chatId, userId, userName, message, explic
     }
     const role = isAssignTicket ? '负责人' : '组员';
 
-    // 1. 更新项目状态为 in_progress（搬运时已是 waiting，确认接单才开始执行）
-    //    看板更新是派生视图维护，不作为接单前置条件：搬运走 category 门控，
-    //    category 为空的工单本来就不进看板，这里 throw 会中止整个接单
-    //    （补充负责人写不上 → 超时检查持续对所有面向组别播报，recvulRfoRHhsI 事故）
-    try {
-      await syncService.updateProjectStatus(sourceRecordId, 'in_progress');
-      console.log(`[接单确认] 项目状态更新为 in_progress`);
-    } catch (statusErr) {
-      console.warn(`[接单确认] 看板状态更新失败（不阻断接单）: ${statusErr.message}`);
-    }
-
-    // 2.5 写入「补充负责人」字段：合并写入（多人单窗口期内会陆续多人接单，不能覆盖）
+    // 1. 写入「补充负责人」字段：合并写入（多人单窗口期内会陆续多人接单，不能覆盖）。
+    //    这是接单的权威落库动作，fail-closed：写失败中止确认链路——此前只记日志继续
+    //    推进，会出现「审批已自动通过、表里却无人接单」的分裂态；现在中止后向群回执
+    //    失败、队员稍后重发接单词即可（状态推进/回执/审批联动都在它之后，不会半途分裂）
     const supplementField = config.assign.supplementField;
     let acceptors = [];
     if (supplementField) {
@@ -1188,11 +1275,30 @@ async function handleAcceptOrderLocked(chatId, userId, userName, message, explic
         );
         console.log(`[接单确认] 已合并写入补充负责人: ${formatMultiNames(acceptors)}`);
       } catch (supplementErr) {
-        console.error(`[接单确认] 写入补充负责人失败:`, supplementErr.message);
+        console.error(`[接单确认] 写入补充负责人失败，中止确认链路（状态/审批未推进） ${sourceRecordId}:`, supplementErr.message);
+        return {
+          success: false,
+          reason: '接单失败：补充负责人写入未成功，本次确认未完成，请稍后重新发送接单词（仍失败请联系管理员）',
+        };
       }
     }
 
-    // 2.6 按接单人所属组别写入看板人员字段（机械→owner，电控/硬件→dkyjcontributers，
+    // 2. 写接单痕迹（机器人自写证据）：对账代通过的信任前置，见 writeAcceptTrace。
+    //    写失败仅 warn——不阻断接单主链路，代价是该单对账不代通过
+    await writeAcceptTrace(sourceRecordId);
+
+    // 3. 更新项目状态为 in_progress（搬运时已是 waiting，确认接单才开始执行）
+    //    看板更新是派生视图维护，不作为接单前置条件：搬运走 category 门控，
+    //    category 为空的工单本来就不进看板，这里 throw 会中止整个接单
+    //    （补充负责人写不上 → 超时检查持续对所有面向组别播报，recvulRfoRHhsI 事故）
+    try {
+      await syncService.updateProjectStatus(sourceRecordId, 'in_progress');
+      console.log(`[接单确认] 项目状态更新为 in_progress`);
+    } catch (statusErr) {
+      console.warn(`[接单确认] 看板状态更新失败（不阻断接单）: ${statusErr.message}`);
+    }
+
+    // 3.5 按接单人所属组别写入看板人员字段（机械→owner，电控/硬件→dkyjcontributers，
     //     视觉→sjcontributers，宣运→xycontributers；组别解析：USER_GROUPS → 通讯录 → 工单面向组别兜底）
     //     与看板已有人员合并（同字段多人并存），不清空其它组别
     try {
@@ -1217,7 +1323,7 @@ async function handleAcceptOrderLocked(chatId, userId, userName, message, explic
       console.error(`[接单确认] 写入看板人员字段失败:`, personErr.message);
     }
 
-    // 3.（原内存待接单列表移除已废弃）队列按源表实时推导，本单出队由
+    // 注：（原内存待接单列表移除已废弃）队列按源表实时推导，本单出队由
     //    补充负责人/审批节点字段变化自然反映，无需内存维护
 
     // 4. 发送确认消息
@@ -1304,8 +1410,10 @@ async function handleAcceptOrderLocked(chatId, userId, userName, message, explic
     pushHistory({ type: 'accept', recordId, userId, userName, title });
     return { success: true, recordId, title };
   } catch (err) {
+    // 对外固定话术：飞书 err.message（接口码/内部字段名）不对群里成员有意义，
+    // 原样发群只会造成困惑；细节留在日志里供排障
     console.error(`[接单确认] 处理失败:`, err.message);
-    return { success: false, reason: err.message };
+    return { success: false, reason: '接单失败，请稍后重试或联系管理员' };
   }
 }
 

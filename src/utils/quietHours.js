@@ -195,6 +195,11 @@ function describeItem(item) {
   return `${item.name}（${item.queuedAt}）`;
 }
 
+/** 积压条目身份键：type+name+fireKey+queuedAt（gate 落盘后序列化往返稳定） */
+function itemKey(item) {
+  return `${item.type}|${item.name}|${item.fireKey || ''}|${item.queuedAt}`;
+}
+
 function scheduleFlush(delayMs) {
   if (flushTimer) clearTimeout(flushTimer);
   nextFlushAt = new Date(Date.now() + delayMs).toISOString();
@@ -221,27 +226,54 @@ async function runFlush() {
 
       console.log(`[晚间静默] 开始冲刷积压 ${items.length} 条...`);
       const remaining = [];
+      const settledKeys = new Set(); // 本轮已成功或已放弃（不再保留）
+      const retryKeys = new Set();   // 本轮失败保留重试
       for (const item of items) {
         try {
           await runItem(item);
+          settledKeys.add(itemKey(item));
           console.log(`[晚间静默] 积压补跑完成: ${describeItem(item)}`);
         } catch (err) {
           item.attempts = (item.attempts || 0) + 1;
           if (item.attempts >= MAX_ATTEMPTS) {
+            settledKeys.add(itemKey(item));
             console.error(`[晚间静默] 积压补跑连续 ${item.attempts} 次失败，放弃: ${describeItem(item)} — ${err.message}`);
           } else {
+            retryKeys.add(itemKey(item));
             remaining.push(item);
             console.error(`[晚间静默] 积压补跑失败（第 ${item.attempts} 次，保留重试）: ${describeItem(item)} — ${err.message}`);
           }
         }
       }
-      saveBacklog(remaining);
+
+      // 收尾保存前重读文件（2026-09-27 竞态修复）：冲刷是分钟级循环，期间
+      // gatePayload/gateTask 可能往文件落了新积压——直接 saveBacklog(remaining)
+      // 会以「本轮快照-已成功」覆盖整个文件，把新条目静默丢掉。以重读结果为基底，
+      // 剔除本轮已结算（成功/放弃）的条目，保留重试的条目用内存态（attempts 已
+      // 自增）替换，最后合并保存
+      const fresh = loadBacklog();
+      const merged = [];
+      const mergedKeys = new Set();
+      for (const it of fresh) {
+        const k = itemKey(it);
+        if (settledKeys.has(k) || mergedKeys.has(k)) continue;
+        mergedKeys.add(k);
+        merged.push(retryKeys.has(k) ? (remaining.find((r) => itemKey(r) === k) || it) : it);
+      }
+      // 本轮快照中的保留项若因并发写丢失（异常场景）也要兜回来
+      for (const r of remaining) {
+        const k = itemKey(r);
+        if (!mergedKeys.has(k)) { mergedKeys.add(k); merged.push(r); }
+      }
+      saveBacklog(merged);
 
       if (remaining.length > 0) {
+        // 有失败保留项：按重试节奏退避，避免无冷却地连打同一批失败条目
         scheduleFlush(RETRY_DELAY_MS);
         return;
       }
-      // 全部成功；冲刷期间新落进的积压由下一轮立刻处理
+      if (merged.length > 0) continue; // 冲刷期间新落进的积压，下一轮立即处理
+      return; // 全部成功且无新积压
     }
     console.warn('[晚间静默] 冲刷轮次达上限，剩余积压留待下次调度');
   } finally {
@@ -289,4 +321,5 @@ module.exports = {
   registerTask,
   initQuietHoursFlush,
   getStatus,
+  runFlush, // 显式冲刷入口（桩测试/运维手动触发用；生产路径走 scheduleFlush）
 };

@@ -14,7 +14,8 @@ const ROOT = path.join(__dirname, '..');
 // ---- 桩：飞书 API / 卡 / 审批联动 / 静默闸门 / 人员组别 ----
 const calls = { updates: [], cards: [], approves: [] };
 let listRecords = [];
-let updateShouldFail = false;
+let updateShouldFail = false;   // 全量写失败
+let updateFailFields = null;    // 指定字段写失败（数组；字段名命中即抛，其余照常成功）
 
 const stubs = {
   [path.join(ROOT, 'src/feishu/bitable.js')]: {
@@ -25,7 +26,8 @@ const stubs = {
       return rec;
     },
     updateRecord: async (appToken, tableId, id, fields) => {
-      if (updateShouldFail) throw new Error('更新记录失败: TextFieldConvFail (code: 1254060)');
+      const hit = updateFailFields && Object.keys(fields).find((k) => updateFailFields.includes(k));
+      if (updateShouldFail || hit) throw new Error(`更新记录失败: TextFieldConvFail (code: 1254060)${hit ? ` 字段=${hit}` : ''}`);
       calls.updates.push({ id, fields });
       // 写后可见（对齐真实表格语义）：并发接单串行化用例依赖后续读到最新值
       const rec = listRecords.find((r) => r.record_id === id);
@@ -96,6 +98,7 @@ function baseRecord(id, over = {}) {
       面向组别: '机械组',
       创建时间: Date.now(),
       已播报: '2026/9/8 17:18:16 reconcile',
+      接单确认时间: Date.now(), // 接单痕迹（对账代通过的信任前置），无痕用例显式置 null
       ...over,
     },
   };
@@ -106,7 +109,10 @@ function check(name, cond, extra = '') {
   if (cond) { pass++; console.log(`  ✅ ${name}`); }
   else { fail++; console.log(`  ❌ ${name} ${extra}`); }
 }
-function reset() { calls.updates.length = 0; calls.cards.length = 0; calls.approves.length = 0; updateShouldFail = false; }
+function reset() {
+  calls.updates.length = 0; calls.cards.length = 0; calls.approves.length = 0;
+  updateShouldFail = false; updateFailFields = null;
+}
 
 (async () => {
   console.log('\n== 1. 对账：多人单窗口已到期（ISO 文本）→ 自动通过 + 结束通告 ==');
@@ -156,14 +162,50 @@ function reset() { calls.updates.length = 0; calls.cards.length = 0; calls.appro
   check('发出「多人接单进行中」卡', calls.cards.some((c) => c.card?.header?.title?.content === '👥 多人接单进行中'));
   check('未即时自动通过', calls.approves.length === 0);
 
-  console.log('\n== 7. 接单确认：多人单窗口写入失败 → 降级为接单即自动通过 ==');
+  console.log('\n== 7. 接单确认：多人单窗口截止写入失败 → 降级为接单即自动通过 ==');
   reset();
   listRecords = [baseRecord('r-multi-fail', { 是否允许多人接单: '是' })];
-  updateShouldFail = true;
+  updateFailFields = ['多人接单截止']; // 仅截止字段失败（补充负责人/痕迹照常成功）
   r = await ticketService.handleAcceptOrder('oc_4994e3f0ca73f76b1243b38622637f47', OTHER.id, OTHER.name, '接单');
   check('确认仍成功（不阻断接单）', r.success === true, JSON.stringify(r));
   check('降级触发自动通过', calls.approves.length === 1, JSON.stringify(calls.approves));
   check('未发续接询问卡', !calls.cards.some((c) => c.card?.header?.title?.content === '👥 多人接单进行中'));
+
+  console.log('\n== 7b. 接单确认：补充负责人写入失败 → 中止确认链路（fail-closed，2026-09-27 整改） ==');
+  reset();
+  listRecords = [baseRecord('r-sup-fail', { 是否允许多人接单: '是' })];
+  updateFailFields = ['补充负责人'];
+  r = await ticketService.handleAcceptOrder('oc_4994e3f0ca73f76b1243b38622637f47', OTHER.id, OTHER.name, '接单');
+  check('确认返回失败', r.success === false && /写入未成功|重新发送/.test(r.reason || ''), JSON.stringify(r));
+  check('未触发审批自动通过（无「已通过但无人接单」分裂态）', calls.approves.length === 0, JSON.stringify(calls.approves));
+  check('未发接单确认卡/续接询问卡', !calls.cards.some((c) => c.card?.header?.title?.content === '📋 接单确认')
+    && !calls.cards.some((c) => c.card?.header?.title?.content === '👥 多人接单进行中'));
+
+  console.log('\n== 10. 对账代通过 gating：无接单痕迹 → 不代通过（2026-09-27 信任模型修复） ==');
+  reset();
+  listRecords = [baseRecord('r-gate-multi', { 是否允许多人接单: '是', 补充负责人: [ME], 多人接单截止: past, 接单确认时间: null })];
+  res = await ticketService.reconcileBroadcasts();
+  check('无痕迹多人单不自动通过', calls.approves.length === 0, JSON.stringify(calls.approves));
+  check('无痕迹不回写窗口截止（整轮不动作）', calls.updates.length === 0, JSON.stringify(calls.updates));
+
+  reset();
+  listRecords = [baseRecord('r-gate-plain', { 补充负责人: [ME], 接单确认时间: null })];
+  res = await ticketService.reconcileBroadcasts();
+  check('无痕迹普通单对账不补通过', calls.approves.length === 0, JSON.stringify(calls.approves));
+  check('reapproved=0', res.reapproved === 0, JSON.stringify(res));
+
+  console.log('\n== 10b. 对账代通过 gating：有接单痕迹 → 照旧代通过 ==');
+  reset();
+  listRecords = [baseRecord('r-gate-ok-multi', { 是否允许多人接单: '是', 补充负责人: [ME], 多人接单截止: past })];
+  res = await ticketService.reconcileBroadcasts();
+  check('有痕迹多人单照旧自动通过', calls.approves.length === 1 && calls.approves[0].role === '多人单', JSON.stringify(calls.approves));
+  check('发出「多人接单结束」卡', calls.cards.some((c) => c.card?.header?.title?.content === '✅ 多人接单结束'));
+
+  reset();
+  listRecords = [baseRecord('r-gate-ok-plain', { 补充负责人: [ME] })];
+  res = await ticketService.reconcileBroadcasts();
+  check('有痕迹普通单对账补通过（approved）', calls.approves.length === 1, JSON.stringify(calls.approves));
+  check('reapproved=1 / multiClosed=0', res.reapproved === 1 && res.multiClosed === 0, JSON.stringify(res));
 
   console.log('\n== 9. 并发接单：同群两笔接单并发到达 → 串行化执行，合并写不丢人（2026-09-13 修复回归） ==');
   reset();

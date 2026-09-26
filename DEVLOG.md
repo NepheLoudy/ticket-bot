@@ -2,7 +2,7 @@
 
 版本隔离单位：一次 `npm run push`（= 一次 git 提交 + 一次部署）。v1~v42 于 2026-09-04 按提交历史回溯编号，此后每次 push 在文末追加新版本（规则见顶层 [AGENTS.md](../../AGENTS.md)）。
 
-当前最新：**v86**（2026-09-26，`4bb8baf`，消费侧组别系数示例注释同步 ×0.25；09-26 下午随部署批上线）。上一版 v85（全量审查批，`d722e26`）。上一版 v83（workload 单级 groups，`45a35d2`）。上一版 v82（workload-by-person 按人端点，`6e3f348`）。
+当前最新：**v87**（2026-09-27，随本提交落地；部署待实验室网段恢复，**上线前先跑 node scripts/ensure-ticket-fields.js**）。上一版 v86（组别系数注释）。上一版 v85（全量审查批，`d722e26`）。上一版 v83（workload 单级 groups，`45a35d2`）。上一版 v82（workload-by-person 按人端点，`6e3f348`）。
 
 ## 阶段十二 · 无人接单升级 + 结单提醒只私聊（2026-09-05）
 
@@ -572,3 +572,13 @@
 
 - 提交说明：docs: unclosedService 注释组别系数示例同步 pm-robot v119（宣运×0.25）
 - `src/services/unclosedService.js` workload-by-person 载荷 `groups` 字段注释里的系数示例值同步——系数本体在 pm-robot `workloadService.js`（其 v119），本仓无行为变化；纯注释，随下次 ticket-bot 部署生效。
+
+## v87 · 2026-09-27 · 随本提交落地 · fix
+
+**第二轮全量对抗审查修复批（表编辑代通过审批的信任模型收紧）**
+
+- 提交说明：fix: 对抗审查——接单痕迹 gating 对账代通过/补充负责人写失败 fail-closed/静默冲刷竞态等
+- **P1**：对账代通过（maybeAutoApproveOnReconcile）只看「补充负责人非空+节点在触发值」，全是队员可编辑字段——表编辑补充负责人→下分钟对账即代通过审批。修：接单成功写「接单确认时间」痕迹字段（scripts/ensure-ticket-fields.js 幂等建列，写失败仅 warn 不阻断接单），对账代通过加痕迹 gating（无痕迹整轮不动作；消息触发的即时自动通过不变——有真实接单消息为证）。
+- **P2**：approvalLink 帧缺 approval_code 时改 fail-closed 不进缓存（原绕过审批定义过滤）；补充负责人写失败改 fail-closed 中止确认链路（原继续推进造成「审批已过、表里无人接单」分裂态+超时误问询）；多人单结束通告加已发标记（补通过不再重发）；quietHours runFlush 收尾前重读文件剔除已结算条目（冲刷期间新积压不再被覆盖丢失）；超时/结单/追问三整点任务加 running 互斥；isSelfMention 启动拉本应用 open_id 精确比对（防成员改名撞 botName 兜底）；接单失败对外固定话术+非精确接单提示群级 60s 频控；孤儿收养剔除 priority；markBroadcast 失败重试一次升告警。
+- 测试：五套全绿（multi-accept 35/sync 31/unclosed 16/workload 19/quiet-flush 新增 5，共 106 断言）。
+- 部署须知：上线前先跑 ensure-ticket-fields.js。

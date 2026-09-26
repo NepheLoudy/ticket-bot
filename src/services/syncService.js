@@ -357,6 +357,9 @@ async function syncRecord(sourceRecord) {
     );
     console.log(`[同步服务] 收养无 key 孤儿行: ${record_id} → ${twin.record_id}（补写查重 key，不再新建）`);
     // 收养后立刻按最新源数据补一次字段（孤儿行停在历史状态，如永卡 waiting）
+    // priority 与 update 路径同口径剔除（照 :313 的 update 处理）：不把人工/
+    // pm-robot 对孤儿行的优先级编辑打回默认 low
+    delete targetFields.priority;
     await bitableApi.updateRecord(
       config.bitable.targetAppToken,
       config.bitable.targetTableId,

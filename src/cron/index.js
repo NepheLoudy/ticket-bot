@@ -619,6 +619,12 @@ let reconcileRunning = false;
 let syncRepairTask = null;
 let syncRepairRunning = false;
 
+// 三个整点任务互斥（照 reconcileRunning 模式）：拉表+逐条私聊/群播可能超过
+// 1 小时，无互斥时重叠 tick 会堆叠出双份私信轰炸与双倍 API 压力
+let timeoutCheckRunning = false;
+let closeReminderRunning = false;
+let assignNudgeRunning = false;
+
 function startCronJobs() {
 
   // 超时检查任务（每小时执行一次）
@@ -633,9 +639,16 @@ function startCronJobs() {
       console.log(`[定时任务] 晚间静默（${quietHours.quietWindowDesc()}），超时检查本轮顺延至下个整点`);
       return;
     }
+    if (timeoutCheckRunning) {
+      console.log('[定时任务] 上一轮超时检查仍在执行，跳过本轮 tick');
+      return;
+    }
     console.log('[定时任务] 触发超时检查');
+    timeoutCheckRunning = true;
     runTimeoutCheck().catch(err => {
       console.error('[定时任务] 超时检查失败:', err.message);
+    }).finally(() => {
+      timeoutCheckRunning = false;
     });
   }, {
     timezone: 'Asia/Shanghai',
@@ -655,9 +668,16 @@ function startCronJobs() {
       console.log(`[定时任务] 晚间静默（${quietHours.quietWindowDesc()}），结单提醒本轮顺延至下个整点`);
       return;
     }
+    if (closeReminderRunning) {
+      console.log('[定时任务] 上一轮结单提醒仍在执行，跳过本轮 tick');
+      return;
+    }
     console.log('[定时任务] 触发结单提醒检查');
+    closeReminderRunning = true;
     runCloseReminderCheck().catch(err => {
       console.error('[定时任务] 结单提醒检查失败:', err.message);
+    }).finally(() => {
+      closeReminderRunning = false;
     });
   }, {
     timezone: 'Asia/Shanghai',
@@ -677,9 +697,16 @@ function startCronJobs() {
       console.log(`[定时任务] 晚间静默（${quietHours.quietWindowDesc()}），确认追问本轮顺延至下个整点`);
       return;
     }
+    if (assignNudgeRunning) {
+      console.log('[定时任务] 上一轮确认追问仍在执行，跳过本轮 tick');
+      return;
+    }
     console.log('[定时任务] 触发指定负责人确认追问检查');
+    assignNudgeRunning = true;
     runAssigneeNudgeCheck().catch(err => {
       console.error('[定时任务] 确认追问检查失败:', err.message);
+    }).finally(() => {
+      assignNudgeRunning = false;
     });
   }, {
     timezone: 'Asia/Shanghai',

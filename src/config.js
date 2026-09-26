@@ -189,6 +189,12 @@ const config = {
     windowField: process.env.MULTI_ACCEPT_WINDOW_FIELD || '多人接单截止',
   },
 
+  // 接单痕迹字段（机器人自写）：接单确认链路成功时在源表行写入确认时刻毫秒数。
+  // 对账代通过以它为前置证据——补充负责人等字段队员可直接编辑，纯表格编辑不能
+  // 当接单证据；消息触发的即时自动通过有真实接单消息为证，不经此字段。
+  // 新字段需表里存在：跑一次幂等迁移脚本 scripts/ensure-ticket-fields.js 预建。
+  acceptTraceField: process.env.ACCEPT_TRACE_FIELD || '接单确认时间',
+
   // 审批节点监听（替代「申请状态」作为播报与超时判断依据）
   approvalNode: {
     field: process.env.APPROVAL_NODE_FIELD || '审批节点',

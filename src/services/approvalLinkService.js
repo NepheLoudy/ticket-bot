@@ -115,7 +115,15 @@ async function handleApprovalTaskEvent(event) {
   if (!instanceId || !taskId) return;
 
   const configuredCode = config.approval.approvalCode;
-  if (configuredCode && evt.approval_code && evt.approval_code !== configuredCode) return;
+  // fail-closed（2026-09-27 信任模型整改）：配置了审批定义 code 且事件帧不带
+  // approval_code 时，无法证明这是工单审批的任务，不进缓存——误缓存其它审批
+  // 定义的触发节点任务会被接单联动误通过。缓存缺失有反查兜底
+  // （findPendingTasksByApplicationNo 按配置 code 查询，天然受限），联动不受影响
+  if (configuredCode && !evt.approval_code) {
+    console.log(`[审批联动] 事件帧缺 approval_code 且已配置 APPROVAL_CODE，fail-closed 跳过缓存: instance ${instanceId} task ${taskId}`);
+    return;
+  }
+  if (configuredCode && evt.approval_code !== configuredCode) return;
 
   const approverAllow = getAutoApproverIds();
   // 名单全空时联动关闭：误通过「回执单」等其它节点的任务会打乱审批流。

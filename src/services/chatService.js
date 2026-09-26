@@ -56,17 +56,54 @@ function pruneProcessedMessages() {
   }
 }
 
+// 本应用 open_id 缓存（首次用到时经 IM API bot info 拉取，进程内缓存）：
+// mentioned_type='bot' 的 mention 只能靠 id 精确判定是「本应用」还是群里
+// 其它机器人应用——拉取失败降级为既有的放宽规则（type=bot 一律放行）
+let selfOpenId = null;
+let selfOpenIdPromise = null;
+
+function getSelfOpenId() {
+  if (!selfOpenIdPromise) {
+    selfOpenIdPromise = (async () => {
+      try {
+        const { requestAPI } = require('../feishu/client');
+        // IM bot info 接口：返回本应用机器人资料（含 open_id）
+        const res = await requestAPI('GET', '/im/v1/bots');
+        if (res.code === 0) {
+          selfOpenId = res.data?.bot?.open_id || null;
+          if (selfOpenId) {
+            console.log(`[聊天服务] 已获取本应用 open_id: ${selfOpenId}（@ 判定走精确比对）`);
+          } else {
+            console.warn('[聊天服务] bot info 未返回 open_id，@ 判定维持放宽规则');
+          }
+        } else {
+          console.warn(`[聊天服务] 拉取 bot info 失败 (code: ${res.code})，@ 判定维持放宽规则`);
+        }
+      } catch (err) {
+        console.warn(`[聊天服务] 拉取 bot info 异常（@ 判定维持放宽规则）: ${err.message}`);
+      }
+      return selfOpenId;
+    })().catch(() => {
+      selfOpenIdPromise = null; // 失败允许下次消息重试（不永久闩死在降级态）
+      return null;
+    });
+  }
+  return selfOpenIdPromise;
+}
+
 /**
  * 严格判断 @ 的是本项目机器人（对话型本体），避免把 @ 其它机器人含「接单」的消息当接单
  * （网关的 mention 判定较宽，这里是本服务的二次校验）。
- * name 比对只作兜底：共用应用下机器人在群里的实际显示名可能与配置名不一致
- * （与 pm-robot 同套放宽规则），mentioned_type=app/bot 即认定 @ 的是本应用机器人
+ * 已知本应用 open_id 时优先按 mention.id === selfId 精确比对（name 兜底不生效——
+ * 两个机器人显示名撞名会把别人的消息当自己的）；id 未知（拉取失败）才沿用放宽规则：
+ * mentioned_type=app/bot 即认定 @ 的是本应用机器人，name 比对兜底
  */
-function isSelfMention(data) {
+function isSelfMention(data, selfId = null) {
   const mentions = data?.message?.mentions || [];
   return mentions.some((m) => {
     if (!m) return false;
     if (m.mentioned_type === 'app' || m.id === 'self') return true;
+    if (selfId) return m.id === selfId;
     if (m.mentioned_type === 'bot') return true;
     return m.name === config.bot.name;
   });
@@ -86,6 +123,18 @@ function isAcceptRelatedText(text) {
 
 function isExactAcceptText(text) {
   return /^(?:确认接单|接单)\d*$/.test((text || '').replace(/\s+/g, ''));
+}
+
+// 非精确接单词提示的群级频控（chatId -> last hint ts）：同一群里有人反复发
+// 「帮我接单」这类聊天时，提示回复 60 秒最多一条，不刷屏
+const nonExactHintAt = new Map();
+const NON_EXACT_HINT_INTERVAL = 60 * 1000;
+
+function pruneNonExactHintAt() {
+  const now = Date.now();
+  for (const [key, ts] of nonExactHintAt) {
+    if (now - ts > NON_EXACT_HINT_INTERVAL) nonExactHintAt.delete(key);
+  }
 }
 
 /**
@@ -117,7 +166,7 @@ async function processChatMessage(data) {
   }
 
   // 接单确认：群内 @对话型机器人 发送「接单」（网关把含「接单」且 @机器人 的消息秒级路由到本项目）
-  if (chatType === 'group' && isAcceptRelatedText(text) && isSelfMention(data)) {
+  if (chatType === 'group' && isAcceptRelatedText(text) && isSelfMention(data, await getSelfOpenId())) {
     // 无单群不监听（2026-09-13 口径）：该群当前没有可接单工单时静默忽略——
     // 非工单群里聊到「接单」不再收到「无待接单工单」/使用提示等噪音回复；
     // 指定负责人的 p2p 私聊确认链路不受影响
@@ -126,6 +175,14 @@ async function processChatMessage(data) {
       return;
     }
     if (!isExactAcceptText(text)) {
+      // 提示回复群级频控：60s 最多 1 条，重复消息只记日志（避免聊天刷屏）
+      pruneNonExactHintAt();
+      const lastHint = nonExactHintAt.get(chatId) || 0;
+      if (Date.now() - lastHint < NON_EXACT_HINT_INTERVAL) {
+        console.log(`[聊天服务] 含「接单」但非精确指令（群级频控内，不重复提示）: ${userName || userId} 在群 ${chatId}`);
+        return;
+      }
+      nonExactHintAt.set(chatId, Date.now());
       console.log(`[聊天服务] 含「接单」但非精确指令，提示后忽略: ${userName || userId} 在群 ${chatId}`);
       await sendTextToChat(chatId, '💡 接单确认请单独发送「接单」（群内有多张待接单工单时，按各工单卡片提示发送「接单1」「接单2」…指定要接的单），刚才的消息不会触发接单');
       return;
@@ -260,4 +317,5 @@ async function syncAllTickets() {
 module.exports = {
   processChatMessage,
   isSelfMention,
+  getSelfOpenId,
 };
