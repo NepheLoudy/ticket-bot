@@ -2,7 +2,7 @@
 
 版本隔离单位：一次 `npm run push`（= 一次 git 提交 + 一次部署）。v1~v42 于 2026-09-04 按提交历史回溯编号，此后每次 push 在文末追加新版本（规则见顶层 [AGENTS.md](../../AGENTS.md)）。
 
-当前最新：**v86**（2026-09-26，消费侧组别系数示例注释同步 ×0.25，随本提交落地）。上一版 v85（全量审查批，`d722e26`）。上一版 v83（workload 单级 groups，`45a35d2`）。上一版 v82（workload-by-person 按人端点，`6e3f348`）。
+当前最新：**v86**（2026-09-26，`4bb8baf`，消费侧组别系数示例注释同步 ×0.25；09-26 下午随部署批上线）。上一版 v85（全量审查批，`d722e26`）。上一版 v83（workload 单级 groups，`45a35d2`）。上一版 v82（workload-by-person 按人端点，`6e3f348`）。
 
 ## 阶段十二 · 无人接单升级 + 结单提醒只私聊（2026-09-05）
 
@@ -566,7 +566,7 @@
 - 其余：cron 私有 broadcastHistory 只写不读且部分路径无上限（慢性内存增长）→ 删除；toDateOnlyTimestamp 改固定 UTC+8 截零点（原按部署机本地时区，非 +8 主机看板 ddl 偏移一天）；quietHours 无调用方的 shanghaiStamp 删除（模块头补保留工具清单）；getTicketApprovalUrl 直读「申请编号」（原经 titleField 默认空串实读 fields[''] 审批链接从未生效）；syncService 未用导入与 handleRecordUpdate 未用形参清理。
 - 测试：四套全绿（multi-accept 24/sync 31/unclosed 16/workload 19）。
 
-## v86 · 2026-09-26 · 随本提交落地 · docs
+## v86 · 2026-09-26 · `4bb8baf` · docs
 
 **消费侧组别系数示例注释随 pm-robot v119 口径同步（宣运×0.5→×0.25）**
 
