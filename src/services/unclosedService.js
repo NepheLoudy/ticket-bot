@@ -276,7 +276,7 @@ async function getWorkloadByPerson() {
       deadlineFormatted: item.deadlineFormatted,
       createdMs: item.createdMs,
       shareCount: item.people.length,
-      groups: item.routeGroups, // 单级「面向组别」：消费侧组别系数（宣运×0.5 等）按单判定
+      groups: item.routeGroups, // 单级「面向组别」：消费侧组别系数（宣运×0.25 等）按单判定
     };
     if (item.people.length === 0) {
       orphanTickets.push({ ...entry, groups: item.routeGroups });
