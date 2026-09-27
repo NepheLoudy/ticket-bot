@@ -2,7 +2,7 @@
 
 版本隔离单位：一次 `npm run push`（= 一次 git 提交 + 一次部署）。v1~v42 于 2026-09-04 按提交历史回溯编号，此后每次 push 在文末追加新版本（规则见顶层 [AGENTS.md](../../AGENTS.md)）。
 
-当前最新：**v87**（2026-09-27，随本提交落地；部署待实验室网段恢复，**上线前先跑 node scripts/ensure-ticket-fields.js**）。上一版 v86（组别系数注释）。上一版 v85（全量审查批，`d722e26`）。上一版 v83（workload 单级 groups，`45a35d2`）。上一版 v82（workload-by-person 按人端点，`6e3f348`）。
+当前最新：**v88**（2026-09-27，随本提交落地；部署待实验室网段恢复，上线前先跑 node scripts/ensure-ticket-fields.js）。上一版 v87（第二轮对抗审查修复批）。上一版 v86（组别系数注释）。上一版 v85（全量审查批，`d722e26`）。上一版 v83（workload 单级 groups，`45a35d2`）。上一版 v82（workload-by-person 按人端点，`6e3f348`）。
 
 ## 阶段十二 · 无人接单升级 + 结单提醒只私聊（2026-09-05）
 
@@ -582,3 +582,17 @@
 - **P2**：approvalLink 帧缺 approval_code 时改 fail-closed 不进缓存（原绕过审批定义过滤）；补充负责人写失败改 fail-closed 中止确认链路（原继续推进造成「审批已过、表里无人接单」分裂态+超时误问询）；多人单结束通告加已发标记（补通过不再重发）；quietHours runFlush 收尾前重读文件剔除已结算条目（冲刷期间新积压不再被覆盖丢失）；超时/结单/追问三整点任务加 running 互斥；isSelfMention 启动拉本应用 open_id 精确比对（防成员改名撞 botName 兜底）；接单失败对外固定话术+非精确接单提示群级 60s 频控；孤儿收养剔除 priority；markBroadcast 失败重试一次升告警。
 - 测试：五套全绿（multi-accept 35/sync 31/unclosed 16/workload 19/quiet-flush 新增 5，共 106 断言）。
 - 部署须知：上线前先跑 ensure-ticket-fields.js。
+
+## v88 · 2026-09-27 · 随本提交落地 · feat
+
+**工单终态联动撤回接单提醒（用户需求：工单撤回时把接单提醒也撤回）**
+
+- 提交说明：feat: 工单终态联动——撤回/拒绝等死亡终态即时撤回各群接单提醒卡 + 播报守卫 + 队列剔除
+- **撤回提醒**：`bot.js` 新增 `deleteMessage`（DELETE /im/v1/messages/:message_id，机器人撤回自己发的卡片）；`ticketService.js` 新增 `revokeTicketReminderCards`——「申请状态」命中死亡终态（已撤回/已拒绝/已取消/已终止/已删除，口径同 syncService.STATUS_MAPPING 的 died 映射，新增 `isDiedStatus` 导出）时按 `keywordCardRegistry` 登记逐条撤回并清登记。事件路径（`handleRecordUpdate` 步骤 0）即时撤，每分钟对账（`reconcileBroadcasts` 新增补偿段+`revoked` 计数）兜底撤——覆盖长连接 1/N 分发漏事件的窗口，双路径天然幂等。
+- **播报守卫**：`broadcastTicketLocked` 发送前重查加终态拦截——撤回单即使审批节点字段仍是触发值也不补播（防「提醒刚撤掉、对账又播出新卡」，静默顺延窗口的撤回单尤其需要）。
+- **队列剔除**：`isTicketAwaitingKeyword` 加终态短路——终态单不进接单队列、不占「接单N」序号，同群剩余工单接单词不再被多占一位。
+- **失败分支**：消息不存在/已撤回（code 230001/230020）清登记不重试；瞬时失败保留登记由对账重试，连续失败达 KEYWORD_CARD_MAX_FAILS(5) 放弃。webhook 兜底卡无 message_id 天然不可撤（随终态自然失效）。
+- 已知边界：登记为内存态且每群×工单只存最近一张卡——超时重问询/多人续接卡覆盖首播卡登记后，更早的消息无法追撤；重启后登记清空同理。属既有登记机制固有限制，未扩大改动。
+- 测试：新增 `scripts/stub-test-revoke.js`（19 断言：事件撤回幂等/播报守卫/对账补偿 revoked/队列剔除/230020 清登记/瞬时失败对账重试/口径同源），`stub-test-multi-accept.js` 的 syncService 桩补 `isDiedStatus`；六套全绿（35+31+16+19+5+19=125 断言）。
+- 文档：README §1 新增「工单终态联动撤回提醒」小节 + 测试清单补两行（顺带修正「四套→六套」过时描述）。
+- 部署须知：同 v87——上线前先跑 node scripts/ensure-ticket-fields.js（本版不新增字段，仅沿用提醒）。

@@ -9,6 +9,7 @@ const {
   buildTicketAssignCard,
   buildReannounceCard,
   updateCardToChat,
+  deleteMessage,
 } = require('../feishu/bot');
 const { formatFieldValue, formatFieldText, getCreatedTime } = require('../utils/fields');
 const { resolvePersonGroups, buildPersonFieldsByGroups } = require('../utils/personFields');
@@ -390,6 +391,7 @@ function isAssignAcceptNode(node) {
  *   触发节点 + （无人接单 | 指定负责人已绑定未确认 | 多人单续接窗口内）
  */
 function isTicketAwaitingKeyword(fields) {
+  if (isDiedTicket(fields)) return false; // 终态单（撤回/拒绝等）不进接单队列、不占接单词序号
   const nodeField = config.approvalNode.field;
   const node = nodeField ? fields[nodeField] : '';
   if (!isActivationNode(node)) return false;
@@ -476,6 +478,55 @@ const KEYWORD_CARD_MAX_FAILS = 5; // 连续更新失败上限（消息被删等�
 function rememberKeywordCard({ chatId, recordId, messageId, kind, ctx = {}, kw = '接单' }) {
   if (!chatId || !recordId || !messageId) return;
   keywordCardRegistry.set(`${chatId}:${recordId}`, { messageId, kind, ctx, kw, fails: 0 });
+}
+
+// ============================================================
+// 工单终态联动撤回（2026-09-27）：申请状态命中审批死亡终态
+//（已撤回/已拒绝/已取消/已终止/已删除，口径同 syncService.STATUS_MAPPING）时：
+//   ①各群仍在登记的接单提醒卡片撤回（事件路径即时 + 每分钟对账补偿双保险）
+//   ②播报守卫拦截（撤回单不再补播，防止「撤了提醒又冒出新卡」）
+//   ③接单队列剔除（终态单不占「接单N」序号）
+// ============================================================
+
+/** 申请状态是否命中死亡终态（字段名与 syncService 同口径：STATUS_FIELD 配置回落「申请状态」） */
+function isDiedTicket(fields) {
+  return syncService.isDiedStatus(fields[config.broadcast.statusField || '申请状态']);
+}
+
+/**
+ * 撤回某工单在各群的接单提醒卡片（按 keywordCardRegistry 登记逐条撤回）
+ * 幂等：登记即删，事件路径与对账补偿重复触发不会二次撤回；
+ * 仅 IM API 卡片有 message_id 可撤，webhook 卡片天然不可撤（随工单终态自然失效）
+ */
+async function revokeTicketReminderCards(recordId, scene = 'revoke') {
+  let revoked = 0;
+  for (const [key, entry] of [...keywordCardRegistry]) {
+    const sep = key.indexOf(':');
+    if (key.slice(sep + 1) !== recordId) continue;
+    const chatId = key.slice(0, sep);
+    try {
+      await deleteMessage(entry.messageId);
+      keywordCardRegistry.delete(key);
+      revoked++;
+      console.log(`[工单撤回] 已撤回接单提醒卡 (${entry.kind}) scene=${scene} @ ${chatId}`);
+    } catch (err) {
+      // 消息不存在/已被撤回（230001/230020）：登记即清，不重试；
+      // 其余失败保留登记交由对账补偿重试，连续失败达上限放弃
+      if (/230001|230020/.test(err.message)) {
+        keywordCardRegistry.delete(key);
+        console.warn(`[工单撤回] 消息已不存在，清除登记 scene=${scene}: ${err.message}`);
+      } else {
+        entry.fails += 1;
+        if (entry.fails >= KEYWORD_CARD_MAX_FAILS) {
+          console.warn(`[工单撤回] 连续失败 ${entry.fails} 次，放弃撤回 scene=${scene}: ${err.message}`);
+          keywordCardRegistry.delete(key);
+        } else {
+          console.warn(`[工单撤回] 撤回失败（对账补偿重试）scene=${scene}: ${err.message}`);
+        }
+      }
+    }
+  }
+  return revoked;
 }
 
 /**
@@ -749,6 +800,11 @@ async function broadcastTicketLocked(record, scene, options = {}) {
   // 发送前重查最新状态：已有人接单 / 审批节点已推进（如已到回执单）则不再播报「无人接单」
   try {
     const fresh = await loadRecord(recordId);
+    // 终态单（撤回/拒绝等）不再播报——事件或对账路径撞上「刚撤回的单」时在此拦截
+    if (isDiedTicket(fresh.fields)) {
+      console.log(`[工单事件] 工单 ${recordId} 申请状态已终态「${fresh.fields[config.broadcast.statusField || '申请状态']}」，跳过播报`);
+      return { broadcast: 0, note: '申请状态终态' };
+    }
     const freshNode = config.approvalNode.field ? fresh.fields[config.approvalNode.field] : '';
     const supplement = fresh.fields[config.assign.supplementField];
     if (supplement && supplement.length > 0) {
@@ -951,6 +1007,7 @@ async function reconcileBroadcasts() {
   let bound = 0;
   let multiClosed = 0;
   let reapproved = 0;
+  let revoked = 0;
   let skipped = 0;
 
   for (const record of all) {
@@ -967,6 +1024,14 @@ async function reconcileBroadcasts() {
       if (syncResult) synced++;
     } catch (err) {
       console.error(`[对账] 补搬运失败 ${record.record_id}:`, err.message);
+    }
+
+    // 撤回补偿：申请状态死亡终态（撤回事件被网关漏掉时的兜底，幂等）——
+    // 撤完提醒即跳过本单后续动作（终态单不该再触发审批联动/补播）
+    if (isDiedTicket(f)) {
+      const n = await revokeTicketReminderCards(record.record_id, 'reconcile');
+      if (n > 0) revoked++;
+      continue;
     }
 
     // 接单后审批联动补偿：多人单窗口到期自动通过（+结束通告）、
@@ -1025,10 +1090,10 @@ async function reconcileBroadcasts() {
     console.warn(`[对账] 接单词卡片刷新失败: ${err.message}`);
   }
 
-  console.log(`[对账] 扫描 ${all.length} 条，补播 ${broadcast}，补搬运 ${synced}，补绑定 ${bound}，多人单窗口关闭 ${multiClosed}，审批补通过 ${reapproved}，跳过 ${skipped}`);
-  pushHistory({ type: 'reconcile', checked: all.length, broadcast, synced, bound, multiClosed, reapproved, skipped });
+  console.log(`[对账] 扫描 ${all.length} 条，补播 ${broadcast}，补搬运 ${synced}，补绑定 ${bound}，多人单窗口关闭 ${multiClosed}，审批补通过 ${reapproved}，撤回提醒 ${revoked}，跳过 ${skipped}`);
+  pushHistory({ type: 'reconcile', checked: all.length, broadcast, synced, bound, multiClosed, reapproved, revoked, skipped });
 
-  return { checked: all.length, broadcast, synced, bound, multiClosed, reapproved, skipped };
+  return { checked: all.length, broadcast, synced, bound, multiClosed, reapproved, revoked, skipped };
 }
 
 /**
@@ -1037,6 +1102,12 @@ async function reconcileBroadcasts() {
 async function handleRecordUpdate(recordId, fields) {
   const record = await loadRecord(recordId, fields);
   console.log(`[工单事件] 工单更新: ${recordId}`);
+
+  // 0. 申请状态进入审批死亡终态（撤回/拒绝等）：联动撤回各群接单提醒
+  //   （幂等，对账路径还有同款补偿兜底事件丢失）
+  if (isDiedTicket(record.fields)) {
+    await revokeTicketReminderCards(recordId, 'event');
+  }
 
   // 1. category 有值时搬运到项目看板（同步映射字段，含 status）
   const syncResult = await syncIfCategoryPresent(record, 'update');

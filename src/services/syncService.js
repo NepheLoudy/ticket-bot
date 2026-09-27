@@ -32,6 +32,14 @@ function statusRank(s) {
 }
 
 /**
+ * 申请状态是否命中审批死亡终态（撤回/拒绝/取消/终止/删除）：
+ * 工单已死，播报守卫拦截 + 各群接单提醒联动撤回的统一口径（供 ticketService 消费）
+ */
+function isDiedStatus(applyStatus) {
+  return !!applyStatus && STATUS_MAPPING[applyStatus] === 'died';
+}
+
+/**
  * status 只向前推进，防止对账 upsert 把业务事件（接单确认→in_progress）重置回 waiting
  * completed/died 为终态直接覆盖
  */
@@ -498,4 +506,5 @@ module.exports = {
   updateProjectStatus,
   mapStatus,
   shouldOverrideStatus,
+  isDiedStatus,
 };

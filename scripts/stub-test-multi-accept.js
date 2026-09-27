@@ -36,6 +36,7 @@ const stubs = {
     createField: async () => ({}),
   },
   [path.join(ROOT, 'src/services/syncService.js')]: {
+    isDiedStatus: (s) => ['已撤回', '已拒绝', '已取消', '已终止', '已删除'].includes(s), // 与 STATUS_MAPPING 口径一致（ticketService 终态联动消费）
     updateProjectStatus: async () => {},
     findTargetRecordByKey: async () => null,
     syncRecord: async () => ({ action: 'update', targetRecordId: 't1' }),

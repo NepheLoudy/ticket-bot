@@ -44,6 +44,20 @@ async function updateCardToChat(chatId, messageId, cardContent) {
   return res.data;
 }
 
+/**
+ * 撤回机器人自己发送的群消息（工单终态后联动撤回接单提醒卡片；
+ * webhook 发送的卡片无 message_id，不可撤回）
+ */
+async function deleteMessage(messageId) {
+  const res = await requestAPI('DELETE', `/im/v1/messages/${messageId}`);
+
+  if (res.code !== 0) {
+    throw new Error(`撤回消息失败: ${res.msg} (code: ${res.code})`);
+  }
+
+  return res.data;
+}
+
 async function sendCardToWebhook(webhookUrl, cardContent) {
   const res = await fetch(webhookUrl, {
     // 无超时的 fetch 挂起会拖住播报链路，15s 强制超时
@@ -310,6 +324,7 @@ module.exports = {
   sendCardToWebhook,
   sendCardToTarget,
   updateCardToChat,
+  deleteMessage,
   sendTextToChat,
   sendTextToUser,
   describeTarget,
