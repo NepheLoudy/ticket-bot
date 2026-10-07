@@ -7,10 +7,10 @@ require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
 const { Client } = require('ssh2');
 
 const cfg = {
-  host: process.env.NAS_HOST,
-  port: Number(process.env.NAS_PORT || 22),
-  username: process.env.NAS_USER,
-  password: process.env.NAS_PASSWORD,
+  host: process.env.DEPLOY_HOST,
+  port: Number(process.env.DEPLOY_PORT || 22),
+  username: process.env.DEPLOY_USER,
+  password: process.env.DEPLOY_PASSWORD,
   readyTimeout: 20000,
   keepaliveInterval: 5000,
 };

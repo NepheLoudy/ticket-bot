@@ -270,7 +270,7 @@ node scripts/probe-project-table.js    # 探测项目看板字段结构
 node scripts/probe-ticket-category.js  # 探测 category 字段取值
 node scripts/probe-ticket.js           # 抽样工单记录
 node scripts/query-parent-projects.js  # 查询各 category 的顶层项目
-node scripts/verify-nas.js             # 核对部署目标上某条工单的播报/搬运结果（一次性排查工具；脚本名沿用历史命名）
+node scripts/verify-deploy.js             # 核对部署目标上某条工单的播报/搬运结果（一次性排查工具；脚本名沿用历史命名）
 node scripts/stub-test-multi-accept.js # 离线桩测试：多人接单窗口/对账自愈/指定负责人确认/并发接单串行化（全外部依赖走桩）
 node scripts/stub-test-sync.js         # 离线桩测试：搬运人员口径/parentId diff门控/key落库校验/孤儿行收养/缺行修补（全外部依赖走桩）
 node scripts/stub-test-unclosed.js     # 离线桩测试：未结单分桶（unclosed-by-group 播报视角）标题口径/三桶判定/组别路由/排序
@@ -336,5 +336,5 @@ ticket-bot/
 
 - `.env` 含飞书应用凭证与群 webhook，严禁提交；已在 `.gitignore` 中排除。
 - 群播报走应用机器人（对话型）IM API（webhook 仅兜底）；接单确认、接单回执、超时私信、结单私信走应用机器人。接单确认依赖应用机器人的消息事件（网关秒级转发），**没有消息轮询/回扫**。
-- `补充负责人` 写入为「尽力而为」，失败不阻断接单确认与回执，错误会打在日志里。
+- `补充负责人` 写入为接单的权威落库动作，**fail-closed：写失败中止确认链路**（状态不推进、回执不发、审批联动不触发，v87——原「尽力而为」继续推进曾造成状态分裂态）。
 - 待接单工单的匹配与序号**按源表数据实时推导**（不依赖内存），服务重启后依然准确；重启只会丢失「已发卡片待改写」的内存登记——已发旧卡不再自动改写，新播报自然按最新队列带序号。

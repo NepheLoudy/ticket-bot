@@ -8,7 +8,7 @@
  * 流程：
  *   [1/4] 代码提交推送到 GitHub（失败则标记，稍后改走 SFTP 直传）
  *   [2/4] 部署代码到部署目标（git push 成功走 git fetch，失败走 SFTP 打包直传）
- *   [3/4] 上传 .env 到部署目标（含飞书密钥，只单独进 NAS，绝不进 git）
+ *   [3/4] 上传 .env 到部署目标（含飞书密钥，只单独进部署目标，绝不进 git）
  *   [4/4] npm install + 重启服务
  */
 const { spawnSync } = require('child_process');
@@ -16,7 +16,7 @@ const { Client } = require('ssh2');
 const os = require('os');
 const path = require('path');
 
-// NAS 连接配置从 .env 读取（NAS_HOST/NAS_PORT/NAS_USER/NAS_PASSWORD），脚本不存任何密钥
+// 部署目标连接配置从 .env 读取（DEPLOY_HOST/DEPLOY_PORT/DEPLOY_USER/DEPLOY_PASSWORD），脚本不存任何密钥
 require('dotenv').config({ path: path.join(__dirname, '.env') });
 // ---------- [0] 部署前测试闸门（2026-09-13 R4）：测试不过不部署；SKIP_TESTS=1 可跳过 ----------
 function runTestGate() {
@@ -45,14 +45,14 @@ const TAR_LOCAL = path.join(os.tmpdir(), TAR_NAME);
 const TAR_REMOTE = '/c/qianli/' + TAR_NAME;
 const TAR_REMOTE_WIN = 'C:/qianli/' + TAR_NAME;
 
-const nasConfig = {
-  host: process.env.NAS_HOST,
-  port: Number(process.env.NAS_PORT || 22),
-  username: process.env.NAS_USER,
-  password: process.env.NAS_PASSWORD,
+const deployConfig = {
+  host: process.env.DEPLOY_HOST,
+  port: Number(process.env.DEPLOY_PORT || 22),
+  username: process.env.DEPLOY_USER,
+  password: process.env.DEPLOY_PASSWORD,
 };
-if (!nasConfig.host || !nasConfig.password) {
-  console.error('缺少 NAS 部署配置：请在 .env 中配置 NAS_HOST/NAS_PORT/NAS_USER/NAS_PASSWORD');
+if (!deployConfig.host || !deployConfig.password) {
+  console.error('缺少部署配置：请在 .env 中配置 DEPLOY_HOST/DEPLOY_PORT/DEPLOY_USER/DEPLOY_PASSWORD');
   process.exit(1);
 }
 
@@ -164,7 +164,7 @@ function exec(cmd, cb) {
 // 部署代码（git 或 SFTP 两种方式）
 async function deployCode() {
   if (gitPushed) {
-    // git 方式：NAS 从 GitHub 拉取（SSH 协议）
+    // git 方式：部署目标从 GitHub 拉取（SSH 协议）
     const cmd = 'cd /c/qianli/opt/ticket-bot && '
       + 'if [ ! -d .git ]; then git init; fi; '
       + 'git remote set-url origin git@github.com:NepheLoudy/ticket-bot.git 2>/dev/null || git remote add origin git@github.com:NepheLoudy/ticket-bot.git; '
@@ -261,4 +261,4 @@ function restart() {
 }
 
 console.log('正在连接部署目标...');
-conn.connect(nasConfig);
+conn.connect(deployConfig);

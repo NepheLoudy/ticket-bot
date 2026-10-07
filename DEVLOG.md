@@ -2,7 +2,7 @@
 
 版本隔离单位：一次 `npm run push`（= 一次 git 提交 + 一次部署）。v1~v42 于 2026-09-04 按提交历史回溯编号，此后每次 push 在文末追加新版本（规则见顶层 [AGENTS.md](../../AGENTS.md)）。
 
-当前最新：**v88**（2026-09-27，`502ad50`，已上线——09-27 22:17 部署批，含 v87；ensure-ticket-fields 已于部署前执行）。上一版 v87（第二轮对抗审查修复批）。上一版 v87（第二轮对抗审查修复批）。上一版 v86（组别系数注释）。上一版 v85（全量审查批，`d722e26`）。上一版 v83（workload 单级 groups，`45a35d2`）。上一版 v82（workload-by-person 按人端点，`6e3f348`）。
+当前最新：**v89**（2026-10-07，NAS_*→DEPLOY_* 连接键改名批，随本提交落地）。上一版 v88（2026-09-27，`502ad50`，已上线——09-27 22:17 部署批，含 v87；ensure-ticket-fields 已于部署前执行）。上一版 v87（第二轮对抗审查修复批）。上一版 v86（组别系数注释）。上一版 v85（全量审查批，`d722e26`）。上一版 v83（workload 单级 groups，`45a35d2`）。上一版 v82（workload-by-person 按人端点，`6e3f348`）。）
 
 ## 阶段十二 · 无人接单升级 + 结单提醒只私聊（2026-09-05）
 
@@ -596,3 +596,11 @@
 - 测试：新增 `scripts/stub-test-revoke.js`（19 断言：事件撤回幂等/播报守卫/对账补偿 revoked/队列剔除/230020 清登记/瞬时失败对账重试/口径同源），`stub-test-multi-accept.js` 的 syncService 桩补 `isDiedStatus`；六套全绿（35+31+16+19+5+19=125 断言）。
 - 文档：README §1 新增「工单终态联动撤回提醒」小节 + 测试清单补两行（顺带修正「四套→六套」过时描述）。
 - 部署须知：同 v87——上线前先跑 node scripts/ensure-ticket-fields.js（本版不新增字段，仅沿用提醒）。
+
+## v89 · 2026-10-07 · 随本提交落地 · chore
+
+**NAS_*→DEPLOY_* 连接键改名批（旧 NAS 残留清理，曼波定）**
+
+- push.js 读键/注释/报错文案、.env.example、本地 .env 键改名（push 时覆盖部署目标同批生效）；
+- scripts/verify-nas.js → verify-deploy.js（排查工具随批改名，内部读键同步；README 命令行更新）；
+- DEVLOG 头部重复句修正（上批遗留）；不影响运行时行为。
