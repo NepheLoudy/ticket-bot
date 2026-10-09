@@ -2,7 +2,7 @@
 
 版本隔离单位：一次 `npm run push`（= 一次 git 提交 + 一次部署）。v1~v42 于 2026-09-04 按提交历史回溯编号，此后每次 push 在文末追加新版本（规则见顶层 [AGENTS.md](../../AGENTS.md)）。
 
-当前最新：**v89**（2026-10-07，NAS_*→DEPLOY_* 连接键改名批，随本提交落地）。上一版 v88（2026-09-27，`502ad50`，已上线——09-27 22:17 部署批，含 v87；ensure-ticket-fields 已于部署前执行）。上一版 v87（第二轮对抗审查修复批）。上一版 v86（组别系数注释）。上一版 v85（全量审查批，`d722e26`）。上一版 v83（workload 单级 groups，`45a35d2`）。上一版 v82（workload-by-person 按人端点，`6e3f348`）。）
+当前最新：**v90**（2026-10-10，quietHours 积压身份键唯一化批——git 先行入库，部署待小电脑上线补跑）。上一版 v89（2026-10-07，NAS_*→DEPLOY_* 连接键改名批）。上一版 v88（2026-09-27，`502ad50`，已上线——09-27 22:17 部署批，含 v87；ensure-ticket-fields 已于部署前执行）。上一版 v87（第二轮对抗审查修复批）。上一版 v86（组别系数注释）。上一版 v85（全量审查批，`d722e26`）。上一版 v83（workload 单级 groups，`45a35d2`）。上一版 v82（workload-by-person 按人端点，`6e3f348`）。）
 
 ## 阶段十二 · 无人接单升级 + 结单提醒只私聊（2026-09-05）
 
@@ -604,3 +604,11 @@
 - push.js 读键/注释/报错文案、.env.example、本地 .env 键改名（push 时覆盖部署目标同批生效）；
 - scripts/verify-nas.js → verify-deploy.js（排查工具随批改名，内部读键同步；README 命令行更新）；
 - DEVLOG 头部重复句修正（上批遗留）；不影响运行时行为。
+
+## v90 · 2026-10-10 · <本提交哈希> · fix
+
+全量审查修复批（quietHours 家族五仓联动）。
+
+- **积压条目身份键唯一化**：原身份键 type+name+fireKey+queuedAt 在同一毫秒入队的两条积压上碰撞——冲刷时同轮结算的一对会被 settledKeys 误吞（本轮基线跑批 stub-test-quiet-flush 偶发失败实锤，产线同毫秒两条通知即触发丢积压）。gateTask/gatePayload 入队签发 crypto.randomUUID() 作身份键，存量无 id 条目回落旧键兼容。
+- stub-test-quiet-flush 补 3 组同毫秒回归断言（带 id 不互吞/无 id remaining 兜底/冲刷期间落盘与已结算同戳不误吞），5 场景 10 断言全过。
+- npm test 七套全过。部署状态：git 先行入库，SFTP 部署因小电脑离线挂起（本机不在实验室网段 + Radmin 对端不通）——上线后重跑 npm run push 补部署，无新版本。
