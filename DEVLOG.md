@@ -612,3 +612,9 @@
 - **积压条目身份键唯一化**：原身份键 type+name+fireKey+queuedAt 在同一毫秒入队的两条积压上碰撞——冲刷时同轮结算的一对会被 settledKeys 误吞（本轮基线跑批 stub-test-quiet-flush 偶发失败实锤，产线同毫秒两条通知即触发丢积压）。gateTask/gatePayload 入队签发 crypto.randomUUID() 作身份键，存量无 id 条目回落旧键兼容。
 - stub-test-quiet-flush 补 3 组同毫秒回归断言（带 id 不互吞/无 id remaining 兜底/冲刷期间落盘与已结算同戳不误吞），5 场景 10 断言全过。
 - npm test 七套全过。部署状态：git 先行入库，SFTP 部署因小电脑离线挂起（本机不在实验室网段 + Radmin 对端不通）——上线后重跑 npm run push 补部署，无新版本。
+
+## v91 · 2026-10-12 · 随本提交落地 · chore
+
+**wecom-attendance-bot 项目废止清理联动（顶层 v146 批）**：仅 AGENTS.md 顶层职能速览行去除 wecom-attendance-bot 段（项目整体废止，详见顶层 DEVLOG v146）。本仓代码零改动。
+
+- v91 补记（同日实测）：凌晨跑批 `test:revoke` 16/3 挂，定位=静默闸门顺延播报致撤回链断言假挂（日志明写「晚间静默…播报顺延」），实现无 bug；测试补 `QUIET_HOURS_DISABLED=1`（require 前设置）后 19/0 全绿。与 duty quiet-flush 同根：**播报类桩测试凌晨跑批必假挂，应在 require 前统一禁用静默**。

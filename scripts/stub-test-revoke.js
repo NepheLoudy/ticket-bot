@@ -12,6 +12,7 @@ process.env.CATEGORY_FIELD = '分类'; // 测试记录不带该字段 → 搬运
 process.env.DEFAULT_CHAT_ID = 'oc_test1'; // 播报兜底群（桩只认这个 chatId）
 process.env.ASSIGN_FIELD = '是否指定人员负责'; // 与生产同构：未指定（「否」）才走组别播报
 process.env.PLAZA_BITABLE_TABLE_ID = '';
+process.env.QUIET_HOURS_DISABLED = '1'; // 禁静默闸门：凌晨跑批时播报顺延会让撤回链断言全挂（2026-10-12 实锤假挂，非实现 bug）
 const os = require('os');
 const path = require('path');
 const Module = require('module');
