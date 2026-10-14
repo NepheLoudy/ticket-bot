@@ -7,6 +7,10 @@ const { getCreatedTime } = require('../utils/fields');
 // 无人接单分桶阈值：与超时检查一致（发起超过 6h 仍无人接单才进 DDL 曝光，刚发布的工单不播）
 const UNCLAIMED_MIN_AGE_MS = 6 * 60 * 60 * 1000;
 
+// 已指派待确认分桶阈值：与确认追问一致（ASSIGN_NUDGE_HOURS，默认 24h）——私聊追问
+// 过一轮还没确认的，次日 DDL 公开曝光（升级路径：私聊追问 → 群内 DDL 可见）
+const UNCONFIRMED_MIN_AGE_MS = (config.assignNudge.hours || 24) * 60 * 60 * 1000;
+
 // 与 pm-robot ticketCloseService 对齐的字段解析（2026-09-17 口径）：标题=需求文本优先
 // （需求1/需求），申请编号只作 code 标注字段——此前标题取 申请编号 优先，导致 DDL 分栏
 // 每行只显示编号看不到需求内容；两者都空回退 工单-后6位。需求截断 40 字防卡片爆行。
@@ -34,7 +38,7 @@ function toGroupList(rawGroups) {
 }
 
 /**
- * 共享取数层：一次全量拉取后按审批节点本地拆分两类（播报/负载两个视角共用，
+ * 共享取数层：一次全量拉取后按审批节点本地拆分三类（播报/负载两个视角共用，
  * 字段提取只做一次）：
  *
  * 1. closing：节点 =「回执单：是否结单」（拆段匹配）的未结单主体。people =
@@ -43,6 +47,11 @@ function toGroupList(rawGroups) {
  *    创建时间（负载时效算法的原料）。
  * 2. unclaimed：节点 ∈ 触发节点（拆段匹配）+ 补充负责人为空（有人接单即写入
  *    该字段）+ 距发起时间 ≥ 6h（与超时检查阈值对齐）。
+ * 3. unconfirmed（2026-10-15）：公示即绑定后滞留指定负责人确认节点的工单——
+ *    节点 =「负责人确认消息后通过」（拆段匹配）+ 是否指定负责人=是 + 补充负责人
+ *    已含指定负责人 + 距发起时间 ≥ 24h（与确认追问 ASSIGN_NUDGE_HOURS 同口径）。
+ *    此前该状态两头不进（unclaimed 按「已接单」跳过、closing 只收回执节点），
+ *    DDL 播报完全不可见；多人单续接中（触发节点+已绑定但非指定负责人流）不进本桶。
  *
  * 全量拉取本地拆段匹配而非服务端等值过滤：并行分支会把节点名以「；」拼接写入
  * 同一字段（与超时检查/确认追问同款做法），等值过滤对拼接值静默失效。
@@ -61,6 +70,7 @@ async function collectUnclosedTickets() {
   const nowMs = Date.now();
   const closing = [];
   const unclaimed = [];
+  const unconfirmed = [];
 
   for (const record of records) {
     const fields = record.fields;
@@ -69,7 +79,31 @@ async function collectUnclosedTickets() {
     // —— 无人接单：触发节点 + 补充负责人为空 + 发起超过 6h ——
     if (config.matchNodeValue(nodeValue, config.approvalNode.acceptValues)) {
       const sup = fields[supplementField];
-      if (sup && sup.length > 0) continue; // 已有人接单（含公示即绑定/多人单续接中）
+      if (sup && sup.length > 0) {
+        // —— 已指派待确认：公示即绑定后滞留指定负责人确认节点（判定与确认追问
+        //    checkUnconfirmedAssignedTickets 完全同口径；多人单续接中不满足
+        //    节点/是否指定负责人条件，天然排除）——
+        const assignee = fields[assigneeField]?.[0];
+        if (
+          config.assign.field && fields[config.assign.field] === config.assign.yesValue &&
+          assignee?.id && sup.some((p) => p?.id === assignee.id) &&
+          config.matchNodeValue(nodeValue, [config.approvalNode.assignAcceptValue])
+        ) {
+          const createdMs = Number(getCreatedTime(fields)) || 0; // 缺失/非数值不曝光（宁漏勿误）
+          if (createdMs && nowMs - createdMs >= UNCONFIRMED_MIN_AGE_MS) {
+            const display = getTicketDisplay(fields, record.record_id);
+            unconfirmed.push({
+              recordId: record.record_id,
+              title: display.title,
+              code: display.code,
+              assigneeName: assignee.name || '',
+              elapsedHours: Math.floor((nowMs - createdMs) / (60 * 60 * 1000)),
+              groups: toGroupList(fields[routeField]),
+            });
+          }
+        }
+        continue; // 已有接单痕迹的触发节点工单：不进无人接单桶，也不进结单桶
+      }
       const createdMs = Number(getCreatedTime(fields)) || 0; // 缺失/非数值跳过（宁漏勿误）
       if (!createdMs || nowMs - createdMs < UNCLAIMED_MIN_AGE_MS) continue;
 
@@ -118,7 +152,7 @@ async function collectUnclosedTickets() {
     });
   }
 
-  return { closing, unclaimed };
+  return { closing, unclaimed, unconfirmed };
 }
 
 /**
@@ -130,26 +164,29 @@ async function collectUnclosedTickets() {
  *    有负责人按人解组别（USER_GROUPS → 通讯录部门 → 面向组别兜底），无负责人按
  *    「面向组别」直分（与无人接单桶同款兜底）。
  * 2. 无人接单分桶（unclaimed）：分组直接用工单「面向组别」。
+ * 3. 已指派待确认分桶（unconfirmed，2026-10-15）：分组同无人接单桶——「面向组别」
+ *    直分（公示目标群就是面向组别群，与确认追问的公示口径一致）。
  *
  * 分组经播报路由映射为群 chatId；一张工单跨多组会出现在多个群。
  *
  * 口径说明（勿当成 bug）：
  * - 管理层/未匹配到播报群组别的工单不会出现在任何 DDL 分栏——管理层群只同步
  *   工单发布与问询播报（GROUP_ROUTES），不作为 DDL 播报对象（hub 仅读四个播报群键）；
- * - pm-robot 降级直读链路（ticket-bot 不可用时）两个分桶的口径应与本章一致；
+ * - pm-robot 降级直读链路（ticket-bot 不可用时）各分桶的口径应与本章一致；
  * - 路由过滤（chatIds 为空即丢弃）是播报视角专属——负载视角见 getWorkloadByPerson。
  *
- * @returns {Promise<Object<{urgent: Array, week: Array, unclaimed: Array, waiting: Array}>>} 以群 chatId 为键
+ * @returns {Promise<Object<{urgent: Array, week: Array, unclaimed: Array, unconfirmed: Array, waiting: Array}>>} 以群 chatId 为键
  */
 async function getUnclosedByGroup() {
   const routeField = config.broadcast.routeField;
-  const { closing, unclaimed } = await collectUnclosedTickets();
+  const { closing, unclaimed, unconfirmed } = await collectUnclosedTickets();
 
   const result = {};
   let unclaimedTotal = 0;
+  let unconfirmedTotal = 0;
 
   const ensureChat = (chatId) => {
-    if (!result[chatId]) result[chatId] = { urgent: [], week: [], unclaimed: [], waiting: [] };
+    if (!result[chatId]) result[chatId] = { urgent: [], week: [], unclaimed: [], unconfirmed: [], waiting: [] };
     return result[chatId];
   };
 
@@ -175,6 +212,22 @@ async function getUnclosedByGroup() {
     };
     for (const chatId of chatIds) ensureChat(chatId).unclaimed.push(ticket);
     unclaimedTotal++;
+  }
+
+  for (const item of unconfirmed) {
+    const chatIds = routeChatIds(item.groups);
+    if (chatIds.size === 0) continue;
+
+    const ticket = {
+      recordId: item.recordId,
+      title: item.title,
+      code: item.code,
+      assigneeName: item.assigneeName,
+      elapsedHours: item.elapsedHours,
+      groups: item.groups,
+    };
+    for (const chatId of chatIds) ensureChat(chatId).unconfirmed.push(ticket);
+    unconfirmedTotal++;
   }
 
   for (const item of closing) {
@@ -217,12 +270,13 @@ async function getUnclosedByGroup() {
     }
   }
 
-  // 排序：结单桶按剩余天数升序（越紧越前）；无人接单桶按已发布时长降序（等最久的排前）；
-  // waiting 桶有结单时间的在前（升序），未填时间的殿后
+  // 排序：结单桶按剩余天数升序（越紧越前）；无人接单桶与已指派待确认桶按已滞留
+  // 时长降序（等最久的排前）；waiting 桶有结单时间的在前（升序），未填时间的殿后
   for (const buckets of Object.values(result)) {
     buckets.urgent.sort((a, b) => a.daysLeft - b.daysLeft);
     buckets.week.sort((a, b) => a.daysLeft - b.daysLeft);
     buckets.unclaimed.sort((a, b) => b.elapsedHours - a.elapsedHours);
+    buckets.unconfirmed.sort((a, b) => b.elapsedHours - a.elapsedHours);
     buckets.waiting.sort((a, b) => {
       if (a.daysLeft === null && b.daysLeft === null) return 0;
       if (a.daysLeft === null) return 1;
@@ -231,8 +285,8 @@ async function getUnclosedByGroup() {
     });
   }
 
-  if (unclaimedTotal > 0) {
-    console.log(`[未结单分组] 无人接单分栏 ${unclaimedTotal} 条（触发节点滞留超 6h）`);
+  if (unclaimedTotal > 0 || unconfirmedTotal > 0) {
+    console.log(`[未结单分组] 无人接单分栏 ${unclaimedTotal} 条（触发节点滞留超 6h）、已指派待确认分栏 ${unconfirmedTotal} 条（公示绑定后超 24h 未确认）`);
   }
 
   return result;
@@ -254,6 +308,7 @@ async function getUnclosedByGroup() {
  */
 async function getWorkloadByPerson() {
   const routeField = config.broadcast.routeField;
+  // unconfirmed（已指派待确认）不计个人负载：人还没确认接单，与 unclaimed 同口径归组别待接
   const { closing, unclaimed } = await collectUnclosedTickets();
 
   const persons = new Map(); // openId → { name, groupSet, tickets }

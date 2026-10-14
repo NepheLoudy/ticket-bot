@@ -1,5 +1,5 @@
 // 桩测试：未结单分组接口（/api/tickets/unclosed-by-group 主链路）——
-// 标题口径（需求优先/编号作 code）/三桶判定/组别路由/排序/降级字段
+// 标题口径（需求优先/编号作 code）/五桶判定（urgent/week/unclaimed/unconfirmed/waiting）/组别路由/排序/降级字段
 // 全离线：stub 掉多维表格全量拉取与人员组别解析
 // （接入 push.js 部署前测试闸门，行为改动必须过本套件）
 const assert = require('assert/strict');
@@ -133,6 +133,46 @@ function rec(fields, id) {
   ok(w3 && w3.daysLeft === null && w3.deadlineFormatted === '', 'waiting：未填结单时间 daysLeft=null');
   ok(r3['oc_zp'].urgent.length === 0 && r3['oc_zp'].week.length === 0, 'waiting：不再重复进 urgent/week');
   ok(r3['oc_gw'].waiting[0].recordId === 'recWait1', 'waiting 排序：有结单时间的在前（本例工位区只有无日期项，无负责人项在场）');
+
+  // —— unconfirmed 桶（2026-10-15：已指派待确认，公示绑定后滞留超 24h）——
+  config.assign.field = '是否指定人员负责';
+  config.assign.yesValue = '是';
+  config.assignNudge.hours = 24;
+  fakeRecords = [
+    // 指定负责人流：节点=负责人确认消息后通过 + 已绑定 + 发起 30h → unconfirmed
+    rec({
+      '审批节点': '负责人确认消息后通过',
+      '是否指定人员负责': '是',
+      '指定负责人': [{ id: 'ou_a', name: '张三' }],
+      '补充负责人': [{ id: 'ou_a', name: '张三' }],
+      '面向组别': ['装配区'],
+      '发起时间': now - 30 * 60 * 60 * 1000,
+      '需求': '已指派但负责人一直没确认的工单',
+    }, 'recUnf1'),
+    // 同状态但刚公示 2h → 未到 24h 阈值不播（宁吵勿早）
+    rec({
+      '审批节点': '负责人确认消息后通过',
+      '是否指定人员负责': '是',
+      '指定负责人': [{ id: 'ou_a', name: '张三' }],
+      '补充负责人': [{ id: 'ou_a', name: '张三' }],
+      '面向组别': ['装配区'],
+      '发起时间': now - 2 * 60 * 60 * 1000,
+    }, 'recUnfFresh'),
+    // 多人单续接中：触发节点 + 已绑定但非指定负责人流 → 不进 unconfirmed
+    rec({
+      '审批节点': '有组员接单后通过',
+      '补充负责人': [{ id: 'ou_b', name: '李四' }],
+      '面向组别': ['装配区'],
+      '发起时间': now - 30 * 60 * 60 * 1000,
+    }, 'recMulti'),
+  ];
+  const r4 = await getUnclosedByGroup();
+  const unf = (r4['oc_zp'].unconfirmed || []).find((t) => t.recordId === 'recUnf1');
+  ok(unf && unf.assigneeName === '张三' && unf.elapsedHours >= 30, '已指派待确认：绑定后滞留超 24h 进 unconfirmed 桶（带负责人姓名/滞留时长）');
+  ok(!(r4['oc_zp'].unconfirmed || []).some((t) => t.recordId === 'recUnfFresh'), '已指派待确认：未到 24h 阈值不播');
+  ok(!(r4['oc_zp'].unconfirmed || []).some((t) => t.recordId === 'recMulti'), '多人单续接中：不进已指派待确认桶');
+  ok(!(r4['oc_zp'].unclaimed || []).some((t) => t.recordId === 'recUnf1'), '已指派待确认：不再误入无人接单桶（此前按「已接单」静默跳过）');
+  ok((r4['oc_zp'].urgent || []).length === 0 && (r4['oc_zp'].week || []).length === 0 && (r4['oc_zp'].waiting || []).length === 0, '已指派待确认：不串入结单三桶（未到回执节点）');
 
   // 长需求截断 40 字
   fakeRecords = [

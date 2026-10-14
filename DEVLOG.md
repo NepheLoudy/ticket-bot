@@ -2,8 +2,8 @@
 
 版本隔离单位：一次 `npm run push`（= 一次 git 提交 + 一次部署）。v1~v42 于 2026-09-04 按提交历史回溯编号，此后每次 push 在文末追加新版本（规则见顶层 [AGENTS.md](../../AGENTS.md)）。
 
-当前最新：**v91**（锚 61512b1，HEAD；v154 审查批校正头部指针滞后——该高频复发项第 4 次）。
-上一版：**v90**（2026-10-10，quietHours 积压身份键唯一化批——git 先行入库，部署待小电脑上线补跑）。上一版 v89（2026-10-07，NAS_*→DEPLOY_* 连接键改名批）。上一版 v88（2026-09-27，`502ad50`，已上线——09-27 22:17 部署批，含 v87；ensure-ticket-fields 已于部署前执行）。上一版 v87（第二轮对抗审查修复批）。上一版 v86（组别系数注释）。上一版 v85（全量审查批，`d722e26`）。上一版 v83（workload 单级 groups，`45a35d2`）。上一版 v82（workload-by-person 按人端点，`6e3f348`）。）
+当前最新：**v92**（2026-10-15，DDL 播报「已指派待确认」分桶联动批，随本提交落地）。
+上一版：**v91**（锚 61512b1，HEAD；v154 审查批校正头部指针滞后——该高频复发项第 4 次）。上上版 v90（2026-10-10，quietHours 积压身份键唯一化批——git 先行入库，部署待小电脑上线补跑）。上一版 v89（2026-10-07，NAS_*→DEPLOY_* 连接键改名批）。上一版 v88（2026-09-27，`502ad50`，已上线——09-27 22:17 部署批，含 v87；ensure-ticket-fields 已于部署前执行）。上一版 v87（第二轮对抗审查修复批）。上一版 v86（组别系数注释）。上一版 v85（全量审查批，`d722e26`）。上一版 v83（workload 单级 groups，`45a35d2`）。上一版 v82（workload-by-person 按人端点，`6e3f348`）。）
 
 ## 阶段十二 · 无人接单升级 + 结单提醒只私聊（2026-09-05）
 
@@ -606,7 +606,7 @@
 - scripts/verify-nas.js → verify-deploy.js（排查工具随批改名，内部读键同步；README 命令行更新）；
 - DEVLOG 头部重复句修正（上批遗留）；不影响运行时行为。
 
-## v90 · 2026-10-10 · <本提交哈希> · fix
+## v90 · 2026-10-10 · f81b10e · fix
 
 全量审查修复批（quietHours 家族五仓联动）。
 
@@ -619,3 +619,14 @@
 **wecom-attendance-bot 项目废止清理联动（顶层 v146 批）**：仅 AGENTS.md 顶层职能速览行去除 wecom-attendance-bot 段（项目整体废止，详见顶层 DEVLOG v146）。本仓代码零改动。
 
 - v91 补记（同日实测）：凌晨跑批 `test:revoke` 16/3 挂，定位=静默闸门顺延播报致撤回链断言假挂（日志明写「晚间静默…播报顺延」），实现无 bug；测试补 `QUIET_HOURS_DISABLED=1`（require 前设置）后 19/0 全绿。与 duty quiet-flush 同根：**播报类桩测试凌晨跑批必假挂，应在 require 前统一禁用静默**。
+
+## v92 · 2026-10-15 · 随本提交落地 · feat
+
+**DDL 播报新增「已指派待确认」分桶（unconfirmed）——指定负责人公示绑定后超 24h 未确认的单次日公开曝光（曼波需求，pm-robot v132 同批联动）**
+
+- 背景：指定负责人工单「公示即绑定」后滞留「负责人确认消息后通过」节点超 24h 的单，此前两头不进——unclosedService 的 unclaimed 桶按「已接单」（补充负责人非空）跳过、结单三桶只收「回执单：是否结单」节点，DDL 播报完全不可见；唯一触达是每小时确认任务的私聊追问（`ASSIGN_NUDGE_HOURS`=24h），无公开渠道。
+- `src/services/unclosedService.js`：`collectUnclosedTickets` 新增第三类 `unconfirmed`——判定与确认追问 `checkUnconfirmedAssignedTickets` 完全同口径（节点=负责人确认消息后通过拆段匹配 + 是否指定负责人=是 + 补充负责人已含指定负责人 + 距发起 ≥24h，阈值读 `config.assignNudge.hours`）；`getUnclosedByGroup` 新增同名桶——按工单「面向组别」直分播报群（公示目标群=面向组别群）、滞留时长降序；多人单续接中（触发节点+已绑定但非指定负责人流）与未绑定单（对账补绑前）不进本桶；**不计负载**（`getWorkloadByPerson` 不消费，与 unclaimed 同口径归组别待接）。
+- API `/api/tickets/unclosed-by-group` 返回形状 additive 扩展（`[chatId].unconfirmed`，带 `assigneeName/elapsedHours/groups`），旧读法兼容。
+- 测试：`stub-test-unclosed.js` 补 unconfirmed 桶 6 断言（30h 进桶带姓名/时长、2h 不播、多人单排除、不误入无人接单桶、不串结单三桶），五套全绿（35+31+21+19+19=125 断言）。
+- 文档：README API 表行更新（unconfirmed 纳入口径与字段细则）+ 测试清单行「三桶→五桶」；LOGIC-MAP §1.6 补分桶条目与返回形状；ticket-pm/AGENTS.md 联动契约第 1 条补五桶口径与两仓同步义务。
+- 部署顺序：先本仓（v92 数据源）后 pm-robot（v132 卡片渲染同批上线）。

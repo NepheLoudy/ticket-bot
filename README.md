@@ -241,7 +241,7 @@ npm start          # 生产模式
 | POST | `/api/bot/rebroadcast` | 手动补播指定工单（body: `{recordId}`，幂等） |
 | POST | `/api/bot/reconcile` | 手动触发播报对账（漏播补播/漏搬补搬） |
 | POST | `/api/bot/test-nudge` | 手动触发一次指定负责人确认追问检查（测试） |
-| GET | `/api/tickets/unclosed-by-group` | 未结单工单按负责人组别分桶（供 pm-robot DDL 分栏取数；含 🆘无人接单 `unclaimed` 桶）。字段细则：`title`=需求文本优先（需求1/需求，截 40 字）/编号兜底，`code`=申请编号；结单桶另带 `handlerName/daysLeft/deadlineFormatted`，无人接单桶另带 `elapsedHours/groups`（面向组别）。纳入口径：结单桶=回执结单节点+有指定/补充负责人+理想结单时间≤7 天（≤2 天进 urgent）；**waiting 等回执桶=回执结单节点上其余全部**（无负责人/未填结单时间/超 7 日——2026-09-17 用户口径：等回执=没做完不允许漏播，无负责人按面向组别兜底分组）；无人接单=触发节点+补充负责人空+发布≥6h；**不播**：其他节点滞留/管理层群 |
+| GET | `/api/tickets/unclosed-by-group` | 未结单工单按负责人组别分桶（供 pm-robot DDL 分栏取数；含 🆘无人接单 `unclaimed` 桶、📨已指派待确认 `unconfirmed` 桶）。字段细则：`title`=需求文本优先（需求1/需求，截 40 字）/编号兜底，`code`=申请编号；结单桶另带 `handlerName/daysLeft/deadlineFormatted`，无人接单桶另带 `elapsedHours/groups`（面向组别），已指派待确认桶另带 `assigneeName/elapsedHours/groups`。纳入口径：结单桶=回执结单节点+有指定/补充负责人+理想结单时间≤7 天（≤2 天进 urgent）；**waiting 等回执桶=回执结单节点上其余全部**（无负责人/未填结单时间/超 7 日——2026-09-17 用户口径：等回执=没做完不允许漏播，无负责人按面向组别兜底分组）；无人接单=触发节点+补充负责人空+发布≥6h；**已指派待确认 `unconfirmed`（2026-10-15）=节点「负责人确认消息后通过」+是否指定负责人=是+补充负责人已绑定+发起≥24h**（对齐确认追问 `ASSIGN_NUDGE_HOURS`：私聊追问过一轮还没确认的次日 DDL 公开曝光；面向组别直分、按滞留降序；多人单续接中/未绑定单不进，不计负载）；**不播**：其他节点滞留/管理层群 |
 | GET | `/api/tickets/workload-by-person` | 未结单工单按人展开（负载视角，pm-robot `/api/hub/workload` 聚合数据源→运维台「团队负载」看板）。`persons` 以 open_id 为键（`name/groups/tickets[]`，tickets 带 `bucket/daysLeft/deadlineMs/deadlineFormatted/createdMs/shareCount/groups`——v83 起单级 `groups`=该单面向组别，供消费侧组别系数；shareCount=负责人总数供摊薄）；与播报视角口径差异：**不做播报路由过滤**（管理层等无路由工单的负责人照样计负载）、无负责人回执单进 `orphanTickets`、无人接单单列 `unclaimed`。分桶判定与 unclosed-by-group 一致（共享 collectUnclosedTickets 取数层，2026-09-24） |
 | POST | `/api/feishu/event` | 飞书事件 HTTP 回调（长连接未启用时） |
 
@@ -273,7 +273,7 @@ node scripts/query-parent-projects.js  # 查询各 category 的顶层项目
 node scripts/verify-deploy.js             # 核对部署目标上某条工单的播报/搬运结果（一次性排查工具；脚本名沿用历史命名）
 node scripts/stub-test-multi-accept.js # 离线桩测试：多人接单窗口/对账自愈/指定负责人确认/并发接单串行化（全外部依赖走桩）
 node scripts/stub-test-sync.js         # 离线桩测试：搬运人员口径/parentId diff门控/key落库校验/孤儿行收养/缺行修补（全外部依赖走桩）
-node scripts/stub-test-unclosed.js     # 离线桩测试：未结单分桶（unclosed-by-group 播报视角）标题口径/三桶判定/组别路由/排序
+node scripts/stub-test-unclosed.js     # 离线桩测试：未结单分桶（unclosed-by-group 播报视角）标题口径/五桶判定（含已指派待确认）/组别路由/排序
 node scripts/stub-test-workload.js     # 离线桩测试：未结单按人展开（workload-by-person 负载视角）按人摊派/指定∪补充去重/摊薄计数/无路由不丢单（2026-09-24）
 node scripts/stub-test-quiet-flush.js  # 离线桩测试：晚间静默冲刷竞态——冲刷期间新落盘积压不丢/失败保留回写（2026-09-27）
 node scripts/stub-test-revoke.js       # 离线桩测试：工单终态联动撤回——事件撤回幂等/播报守卫/对账补偿/队列剔除/失败分支（2026-09-27）
