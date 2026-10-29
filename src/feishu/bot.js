@@ -1,6 +1,7 @@
 const config = require('../config');
 const { requestAPI } = require('./client');
 const { formatFieldValue, formatFieldText } = require('../utils/fields');
+const { sanitizeCardText } = require('../utils/sanitize');
 
 // ============================================================
 // 消息发送：支持两种目标
@@ -166,10 +167,10 @@ function getTicketApprovalUrl(fields, recordId) {
  */
 function getTicketTitle(fields, recordId) {
   const raw = config.broadcast.titleField ? fields[config.broadcast.titleField] : '';
-  const title = raw ? formatFieldText(raw) : '';
+  const title = raw ? sanitizeCardText(formatFieldText(raw)) : '';
   if (title) return title;
 
-  const demand = formatFieldValue(fields['需求1'] ?? fields['需求']);
+  const demand = sanitizeCardText(formatFieldValue(fields['需求1'] ?? fields['需求']));
   if (demand) return demand.length > 30 ? `${demand.slice(0, 30)}…` : demand;
 
   return `工单 ${recordId.slice(-6)}`;
@@ -184,7 +185,8 @@ function buildTicketFieldLines(fields, exclude = []) {
 
   const lines = [];
   for (const name of names) {
-    let text = formatFieldValue(fields[name]);
+    // 消毒先行（截断前）：剥 <at> 标签/链接语法/行首标题符，防播报群官方卡注入
+    let text = sanitizeCardText(formatFieldValue(fields[name]));
     if (!text) continue;
     if (text.length > 200) text = `${text.slice(0, 200)}…`;
     lines.push({ tag: 'markdown', content: `**${name}**: ${text}` });
@@ -249,7 +251,7 @@ function buildTicketAssignCard(record, assignee, kw = '接单') {
   const elements = [
     { tag: 'markdown', content: `**${title}**` },
     { tag: 'hr' },
-    { tag: 'markdown', content: `📬 ${at} **${assignee?.name || ''}** 有新工单发布，已为你自动绑定接单` },
+    { tag: 'markdown', content: `📬 ${at} **${sanitizeCardText(assignee?.name || '')}** 有新工单发布，已为你自动绑定接单` },
     ...buildTicketFieldLines(fields, [config.broadcast.titleField]),
     { tag: 'hr' },
     { tag: 'markdown', content: assignKeywordLine(kw) },
