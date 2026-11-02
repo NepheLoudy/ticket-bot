@@ -12,6 +12,7 @@ const {
 const { formatFieldValue, formatFieldText, getCreatedTime } = require('../utils/fields');
 const { getTicketApprovalUrl } = require('../feishu/bot');
 const quietHours = require('../utils/quietHours');
+const { createTaskGate } = require('../utils/taskGate');
 
 // 审批流原生字段名（审批表侧概念，无对应 env 配置；审批表改名需同步这里）
 const FIELD_HANDLER = '当前处理人';
@@ -612,18 +613,17 @@ let timeoutTask = null;
 let closeReminderTask = null;
 let assignNudgeTask = null;
 let reconcileTask = null;
-
-// 对账整轮互斥：上一轮扫描（全量拉表+逐条处理，可能超过 1 分钟）未结束时，
-// 重叠 tick 直接跳过，防止扫描堆叠放大 API 压力与播报并发
-let reconcileRunning = false;
 let syncRepairTask = null;
-let syncRepairRunning = false;
 
-// 三个整点任务互斥（照 reconcileRunning 模式）：拉表+逐条私聊/群播可能超过
-// 1 小时，无互斥时重叠 tick 会堆叠出双份私信轰炸与双倍 API 压力
-let timeoutCheckRunning = false;
-let closeReminderRunning = false;
-let assignNudgeRunning = false;
+// 各定时任务的互斥闸门：上一轮未结束时重叠 tick 跳过，防扫描堆叠放大 API 压力
+// 与播报并发；并挂看门狗——单轮悬挂（如故障窗口内请求永不 settle，2026-11-01
+// 对账卡死 48.8h 事故）超过阈值时强制复位放行，兜底机制不因一轮卡死而整体停摆。
+// 阈值按任务节奏给余量：对账正常几十秒；整点任务拉表+逐条私聊/群播可能超 1 小时。
+const reconcileGate = createTaskGate('播报对账', 10 * 60 * 1000);
+const syncRepairGate = createTaskGate('搬运缺行修补', 30 * 60 * 1000);
+const timeoutCheckGate = createTaskGate('超时检查', 3 * 60 * 60 * 1000);
+const closeReminderGate = createTaskGate('结单提醒', 3 * 60 * 60 * 1000);
+const assignNudgeGate = createTaskGate('确认追问', 3 * 60 * 60 * 1000);
 
 function startCronJobs() {
 
@@ -639,16 +639,16 @@ function startCronJobs() {
       console.log(`[定时任务] 晚间静默（${quietHours.quietWindowDesc()}），超时检查本轮顺延至下个整点`);
       return;
     }
-    if (timeoutCheckRunning) {
+    const gateToken = timeoutCheckGate.tryEnter();
+    if (!gateToken) {
       console.log('[定时任务] 上一轮超时检查仍在执行，跳过本轮 tick');
       return;
     }
     console.log('[定时任务] 触发超时检查');
-    timeoutCheckRunning = true;
     runTimeoutCheck().catch(err => {
       console.error('[定时任务] 超时检查失败:', err.message);
     }).finally(() => {
-      timeoutCheckRunning = false;
+      timeoutCheckGate.leave(gateToken);
     });
   }, {
     timezone: 'Asia/Shanghai',
@@ -668,16 +668,16 @@ function startCronJobs() {
       console.log(`[定时任务] 晚间静默（${quietHours.quietWindowDesc()}），结单提醒本轮顺延至下个整点`);
       return;
     }
-    if (closeReminderRunning) {
+    const gateToken = closeReminderGate.tryEnter();
+    if (!gateToken) {
       console.log('[定时任务] 上一轮结单提醒仍在执行，跳过本轮 tick');
       return;
     }
     console.log('[定时任务] 触发结单提醒检查');
-    closeReminderRunning = true;
     runCloseReminderCheck().catch(err => {
       console.error('[定时任务] 结单提醒检查失败:', err.message);
     }).finally(() => {
-      closeReminderRunning = false;
+      closeReminderGate.leave(gateToken);
     });
   }, {
     timezone: 'Asia/Shanghai',
@@ -697,16 +697,16 @@ function startCronJobs() {
       console.log(`[定时任务] 晚间静默（${quietHours.quietWindowDesc()}），确认追问本轮顺延至下个整点`);
       return;
     }
-    if (assignNudgeRunning) {
+    const gateToken = assignNudgeGate.tryEnter();
+    if (!gateToken) {
       console.log('[定时任务] 上一轮确认追问仍在执行，跳过本轮 tick');
       return;
     }
     console.log('[定时任务] 触发指定负责人确认追问检查');
-    assignNudgeRunning = true;
     runAssigneeNudgeCheck().catch(err => {
       console.error('[定时任务] 确认追问检查失败:', err.message);
     }).finally(() => {
-      assignNudgeRunning = false;
+      assignNudgeGate.leave(gateToken);
     });
   }, {
     timezone: 'Asia/Shanghai',
@@ -722,16 +722,16 @@ function startCronJobs() {
   }
 
   reconcileTask = cron.schedule('* * * * *', () => {
-    if (reconcileRunning) {
+    const gateToken = reconcileGate.tryEnter();
+    if (!gateToken) {
       console.log('[定时任务] 上一轮播报对账仍在执行，跳过本轮 tick');
       return;
     }
     console.log('[定时任务] 触发播报对账');
-    reconcileRunning = true;
     ticketService.reconcileBroadcasts().catch(err => {
       console.error('[定时任务] 播报对账失败:', err.message);
     }).finally(() => {
-      reconcileRunning = false;
+      reconcileGate.leave(gateToken);
     });
   }, {
     timezone: 'Asia/Shanghai',
@@ -743,15 +743,15 @@ function startCronJobs() {
   // 事件在重启/网关抖动中丢失即永久漏搬——巡检看板缺行并补建（已有行不重写，防事件回环）。
   // 纯数据对账无播报，不过晚间静默闸门。
   syncRepairTask = cron.schedule(config.sync.repairSchedule, () => {
-    if (syncRepairRunning) {
+    const gateToken = syncRepairGate.tryEnter();
+    if (!gateToken) {
       console.log('[定时任务] 上一轮缺行修补仍在执行，跳过本轮');
       return;
     }
-    syncRepairRunning = true;
     syncService.repairMissingTargets().catch(err => {
       console.error('[定时任务] 缺行修补失败:', err.message);
     }).finally(() => {
-      syncRepairRunning = false;
+      syncRepairGate.leave(gateToken);
     });
   }, { timezone: 'Asia/Shanghai' });
   console.log(`[定时任务] 搬运缺行修补已启动: ${config.sync.repairSchedule} (Asia/Shanghai)`);

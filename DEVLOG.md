@@ -2,7 +2,7 @@
 
 版本隔离单位：一次 `npm run push`（= 一次 git 提交 + 一次部署）。v1~v42 于 2026-09-04 按提交历史回溯编号，此后每次 push 在文末追加新版本（规则见顶层 [AGENTS.md](../../AGENTS.md)）。
 
-当前最新：**v93**（2026-10-30，播报卡消毒批——hub 同款 sanitizeCardText 推广到源头，新增 stub-test-card-sanitize 11 断言，全量 7 套全绿）。
+当前最新：**v94**（2026-11-03，对账卡死 48.8h 事故修复批——出站 fetch 无界清零 + 定时任务看门狗闸门，新增 stub-test-task-gate 6 断言，全量 8 套全绿；v93 sanitize 同批补落地现网）。
 上一版：**v92**（2026-10-15，DDL 播报「已指派待确认」分桶联动批，随本提交落地）。
 上一版：**v91**（锚 61512b1，HEAD；v154 审查批校正头部指针滞后——该高频复发项第 4 次）。上上版 v90（2026-10-10，quietHours 积压身份键唯一化批——git 先行入库，部署待小电脑上线补跑）。上一版 v89（2026-10-07，NAS_*→DEPLOY_* 连接键改名批）。上一版 v88（2026-09-27，`502ad50`，已上线——09-27 22:17 部署批，含 v87；ensure-ticket-fields 已于部署前执行）。上一版 v87（第二轮对抗审查修复批）。上一版 v86（组别系数注释）。上一版 v85（全量审查批，`d722e26`）。上一版 v83（workload 单级 groups，`45a35d2`）。上一版 v82（workload-by-person 按人端点，`6e3f348`）。）
 
@@ -640,3 +640,13 @@
 - 新增 `src/utils/sanitize.js`（与 hub 同款 20 行单文件）：剥 `<at>` 标签 / `[文本](url)` 链接（还原纯文本）/ 行首标题符；正常中文/括号/书名号零误伤。
 - `bot.js` 四处接入：getTicketTitle（title/需求摘要）、buildTicketFieldLines（全部展示字段行，消毒在截断前）、buildTicketAssignCard 的 assignee.name（buildAtTag 的有意 @ 不经过消毒）；ticketBrief 为纯文本消息不渲染 markdown，无需消毒。
 - 测试：新增 `scripts/stub-test-card-sanitize.js` 11 断言（纯函数 8 + 开单卡/指定负责人卡集成 3），全量 7 套全绿。
+
+## v94 · 2026-11-03 · 随本提交落地 · fix
+
+**对账卡死 48.8h 事故修复——出站 fetch 无界清零 + 定时任务看门狗闸门**
+
+- **事故链**（2026-11-01 00:04 → 11-03 01:18）：11-01 凌晨实验室网络故障（小电脑 DNS 解析 open.feishu.cn 反复 ENOTFOUND，同窗口网关长连接反复断连）；00:04 一轮播报对账的某个出站请求永久悬挂，互斥标志 reconcileRunning 恒 true，每分钟对账 tick 全部「跳过」——兜底补播通道停摆 48.8h。曼波 11-01 18:17 提的宣运组工单（reczz28UVdw6cZmI「给千里论坛设计个群头像」）create 事件恰又被网关断连窗口吞掉（ticket-bot 当日收 409 条源表事件中 create=0），双通道全灭 → 工单不播报。11-03 排障：手动 POST /api/bot/reconcile 成功补播（broadcast=1，顺带关闭多人单窗口 reczz28TeU4fA0He），证明现网 IO 已恢复、仅旧轮 promise 僵尸；pm2 restart 清场后 cron 对账即恢复正常节奏。
+- **挂点定性**（取证后未能 100% 实锤，重启清场后现场不可再取）：全仓无自造 promise/定时器等待；fetch 有 undici connectTimeout(10s)/headersTimeout/bodyTimeout(300s) 与 requestAPI 的 AbortSignal.timeout(15s) 多层有界，TCP connect 悬挂实测 10.6s 必断（SYN 黑洞实验）；唯一无 signal 的出站 fetch 是 client.js 的 token 请求，DNS 悬挂型故障不受 connectTimeout 覆盖（net.connect 的 timeout 不覆盖 getaddrinfo 阶段）为最可能挂点；事件循环存活（cron tick 照跑）+ CPU 空闲（0.6~1.2%）排除死循环翻页。
+- **修复三件套**：① client.js token fetch 补 AbortSignal.timeout(15s)——出站 fetch 无界清零（bot.js webhook fetch 的 signal 已在 v93 批改好，本次随部署一并落地现网）；② 新增 src/utils/taskGate.js 互斥闸门（tryEnter/leave + 看门狗强制复位 + 令牌防误复位——看门狗复位后旧轮迟到的 finally 携旧令牌不会误清新一轮标志），cron 五个任务（对账 10 分钟/缺行修补 30 分钟/超时检查+结单提醒+确认追问 3 小时）全部接入，单轮悬挂超阈值即强制放行并打 ⚠️ 告警，兜底机制不再因一轮卡死整体停摆（僵尸 promise 有界、重启即清）；③ README 测试清单/LOGIC-MAP §1.4 同步。
+- **v93 批遗留一并补齐**：bot.js sanitize 与 webhook signal 此前提交但未部署成功（现网 md5 落后 HEAD 一版，本次 push 补落地）；stub-test-card-sanitize 漏挂 npm test 链，本次补挂。
+- 测试：新增 scripts/stub-test-task-gate.js 6 组断言（空闲令牌/重入拒绝/正常收尾/看门狗强制复位/令牌防误复位/出站 fetch 无裸奔——后两者为防回归的源码断言），全量 8 套全绿（35+31+21+19+19+11+6 组+静默冲刷套）；npm test 链补挂 test:task-gate 与 test:card-sanitize。

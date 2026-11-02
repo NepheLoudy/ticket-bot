@@ -20,6 +20,10 @@ async function getTenantAccessToken() {
 
   const res = await fetch(`${BASE_URL}/auth/v3/tenant_access_token/internal`, {
     method: 'POST',
+    // 无 signal 的 token 请求悬挂（如故障窗口内 DNS 解析挂死）会让所有 requestAPI
+    // 排队等 token 永久 pending，进而挂死对账轮，15s 强制超时（2026-11-01 对账
+    // 卡死 48h 事故的最后一个无界出站点）
+    signal: AbortSignal.timeout(15000),
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       app_id: config.feishu.appId,

@@ -8,13 +8,15 @@
     "dev": "nodemon src/index.js",
     "deploy": "node push.js",
     "push": "node push.js",
-    "test": "npm run test:multi-accept && npm run test:sync && npm run test:unclosed && npm run test:workload && npm run test:quiet-flush && npm run test:revoke",
+    "test": "npm run test:multi-accept && npm run test:sync && npm run test:unclosed && npm run test:workload && npm run test:quiet-flush && npm run test:revoke && npm run test:task-gate && npm run test:card-sanitize",
     "test:multi-accept": "node scripts/stub-test-multi-accept.js",
     "test:sync": "node scripts/stub-test-sync.js",
     "test:unclosed": "node scripts/stub-test-unclosed.js",
     "test:workload": "node scripts/stub-test-workload.js",
     "test:quiet-flush": "node scripts/stub-test-quiet-flush.js",
-    "test:revoke": "node scripts/stub-test-revoke.js"
+    "test:revoke": "node scripts/stub-test-revoke.js",
+    "test:task-gate": "node scripts/stub-test-task-gate.js",
+    "test:card-sanitize": "node scripts/stub-test-card-sanitize.js"
   },
   "keywords": [
     "feishu",
