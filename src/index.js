@@ -76,7 +76,9 @@ app.get('/api/tickets/policy', (req, res) => {
 app.get('/api/tickets/unclosed-by-group', async (req, res) => {
   try {
     const result = await unclosedService.getUnclosedByGroup();
-    res.json({ result });
+    // 2026-11-05 全量审查 P2：增量回传 unconfirmed 老化阈值（=config.assignNudge.hours），
+    // 消费方（pm-robot）以此作单一真相源，不再靠两仓 env 键文档级同步
+    res.json({ result, unconfirmedHours: config.assignNudge.hours });
   } catch (err) {
     console.error('[API] 未结单工单分组查询失败:', err);
     res.status(500).json({ error: err.message });

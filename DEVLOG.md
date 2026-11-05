@@ -2,7 +2,7 @@
 
 版本隔离单位：一次 `npm run push`（= 一次 git 提交 + 一次部署）。v1~v42 于 2026-09-04 按提交历史回溯编号，此后每次 push 在文末追加新版本（规则见顶层 [AGENTS.md](../../AGENTS.md)）。
 
-当前最新：**v94**（2026-11-03，对账卡死 48.8h 事故修复批——出站 fetch 无界清零 + 定时任务看门狗闸门，新增 stub-test-task-gate 6 断言，全量 8 套全绿；v93 sanitize 同批补落地现网）。
+当前最新：**v95**（2026-11-05，全量审查收口——by-group 回传 unconfirmedHours 真相源+push.js PM2 常量化，8 套全绿）。上一版 v94（2026-11-03，对账卡死 48.8h 事故修复批——出站 fetch 无界清零 + 定时任务看门狗闸门，新增 stub-test-task-gate 6 断言，全量 8 套全绿；v93 sanitize 同批补落地现网）。
 上一版：**v92**（2026-10-15，DDL 播报「已指派待确认」分桶联动批，随本提交落地）。
 上一版：**v91**（锚 61512b1，HEAD；v154 审查批校正头部指针滞后——该高频复发项第 4 次）。上上版 v90（2026-10-10，quietHours 积压身份键唯一化批——git 先行入库，部署待小电脑上线补跑）。上一版 v89（2026-10-07，NAS_*→DEPLOY_* 连接键改名批）。上一版 v88（2026-09-27，`502ad50`，已上线——09-27 22:17 部署批，含 v87；ensure-ticket-fields 已于部署前执行）。上一版 v87（第二轮对抗审查修复批）。上一版 v86（组别系数注释）。上一版 v85（全量审查批，`d722e26`）。上一版 v83（workload 单级 groups，`45a35d2`）。上一版 v82（workload-by-person 按人端点，`6e3f348`）。）
 
@@ -650,3 +650,10 @@
 - **修复三件套**：① client.js token fetch 补 AbortSignal.timeout(15s)——出站 fetch 无界清零（bot.js webhook fetch 的 signal 已在 v93 批改好，本次随部署一并落地现网）；② 新增 src/utils/taskGate.js 互斥闸门（tryEnter/leave + 看门狗强制复位 + 令牌防误复位——看门狗复位后旧轮迟到的 finally 携旧令牌不会误清新一轮标志），cron 五个任务（对账 10 分钟/缺行修补 30 分钟/超时检查+结单提醒+确认追问 3 小时）全部接入，单轮悬挂超阈值即强制放行并打 ⚠️ 告警，兜底机制不再因一轮卡死整体停摆（僵尸 promise 有界、重启即清）；③ README 测试清单/LOGIC-MAP §1.4 同步。
 - **v93 批遗留一并补齐**：bot.js sanitize 与 webhook signal 此前提交但未部署成功（现网 md5 落后 HEAD 一版，本次 push 补落地）；stub-test-card-sanitize 漏挂 npm test 链，本次补挂。
 - 测试：新增 scripts/stub-test-task-gate.js 6 组断言（空闲令牌/重入拒绝/正常收尾/看门狗强制复位/令牌防误复位/出站 fetch 无裸奔——后两者为防回归的源码断言），全量 8 套全绿（35+31+21+19+19+11+6 组+静默冲刷套）；npm test 链补挂 test:task-gate 与 test:card-sanitize。
+## v95 · 2026-11-05 · 随本提交落地 · fix
+
+**全量审查收口批（2026-11-04 深夜全量审查 ticket-bot 域——审查结论「高健康、无 P0/P1」，本批收契约加固与一致性）**
+
+- **P2 unclosed-by-group 增量回传 unconfirmedHours（src/index.js）**：响应增量加 `unconfirmedHours: config.assignNudge.hours`——pm-robot（主路径+降级直读链路）以此作 unconfirmed 老化阈值的单一真相源，终结「ASSIGN_NUDGE_HOURS vs TICKET_ASSIGN_NUDGE_HOURS 两仓异键仅靠文档同步」的静默漂移隐患。增量字段向后兼容（现有消费方解构 result 不受影响）。
+- **P2 push.js PM2 名常量化**：`'ticket-bot'` 硬编码改 PM2_NAME 常量（与其它仓一致）；同文件 tearingDown 守卫已随 2026-11-05 主线批先行落地（收尾 ECONNRESET 误报不再自证失败）。
+- **测试**：8 套桩全绿（card-sanitize/multi-accept/quiet-flush/revoke/sync/task-gate/unclosed/workload）。

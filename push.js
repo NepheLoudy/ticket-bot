@@ -40,6 +40,8 @@ if (!runTestGate()) process.exit(1);
 
 const commitMessage = process.argv[2] || 'update: 代码更新';
 const TAR_NAME = 'ticket-bot-deploy.tar.gz';
+// PM2 名统一走常量（2026-11-05 全量审查 P2：与其它仓一致，防改名字符串散落）
+const PM2_NAME = 'ticket-bot';
 // 打包时用相对文件名 + cwd 指向临时目录，避免 Windows GNU tar 把 "C:" 当远程主机
 const TAR_LOCAL = path.join(os.tmpdir(), TAR_NAME);
 const TAR_REMOTE = '/c/qianli/' + TAR_NAME;
@@ -134,7 +136,16 @@ function execCode(cmd) {
   });
 }
 
+// 2026-11-05 tearingDown 守卫（全量审查 P2）：conn.end() 主动收尾后服务端 RST 回包会把成功部署
+// 误报成失败退出码 1——主动收尾后的连接错误按已知误报忽略，不再自证失败
+let tearingDown = false;
+const _connEnd = conn.end.bind(conn);
+conn.end = (...args) => { tearingDown = true; return _connEnd(...args); };
 conn.on('error', (err) => {
+  if (tearingDown) {
+    console.log('SSH 收尾连接已关闭（' + err.message + '）——部署流程已正常走完，按已知误报忽略');
+    process.exit(0);
+  }
   console.error('SSH 连接失败:', err.message);
   process.exit(1);
 });
@@ -249,7 +260,7 @@ function uploadEnv() {
 function restart() {
   console.log('\n========== [4/4] 重启服务 ==========');
   const cmd = `export PATH=${remoteNodeDir}:$PATH; `
-    + 'pm2 restart ticket-bot --update-env 2>/dev/null || pm2 start /c/qianli/opt/ticket-bot/src/index.js --name ticket-bot; pm2 save';
+    + `pm2 restart ${PM2_NAME} --update-env 2>/dev/null || pm2 start /c/qianli/opt/ticket-bot/src/index.js --name ${PM2_NAME}; pm2 save`;
   exec(cmd, () => {
     console.log('\n✅ 部署完成，服务状态：');
     conn.exec(`export PATH=${remoteNodeDir}:$PATH; pm2 list`, (err, stream) => {
