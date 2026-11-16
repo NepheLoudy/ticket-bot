@@ -657,3 +657,13 @@
 - **P2 unclosed-by-group 增量回传 unconfirmedHours（src/index.js）**：响应增量加 `unconfirmedHours: config.assignNudge.hours`——pm-robot（主路径+降级直读链路）以此作 unconfirmed 老化阈值的单一真相源，终结「ASSIGN_NUDGE_HOURS vs TICKET_ASSIGN_NUDGE_HOURS 两仓异键仅靠文档同步」的静默漂移隐患。增量字段向后兼容（现有消费方解构 result 不受影响）。
 - **P2 push.js PM2 名常量化**：`'ticket-bot'` 硬编码改 PM2_NAME 常量（与其它仓一致）；同文件 tearingDown 守卫已随 2026-11-05 主线批先行落地（收尾 ECONNRESET 误报不再自证失败）。
 - **测试**：8 套桩全绿（card-sanitize/multi-accept/quiet-flush/revoke/sync/task-gate/unclosed/workload）。
+## v96 · 2026-11-16 · 随本提交落地 · feat
+
+**工单附图上卡（曼波令：附图在机器人回复中只显示「N 张图片」文本）**
+
+- **根因**：工单从审批流发起，附图存审批实例 form 的 image 控件（CDN 签名直链）；工单表「相关说明」只存 previewAttachment 链接+「N 张图片」文本（approval/admin 域名，队员无权限点开）——播报卡照抄字段值即现「一张图片」占位。取证链：工作区全量 grep 无该文案→工单表 26 条「相关说明」实锤审批附件链接形态→applink 解析 instanceId 不可见→instances/query 字段名纠偏（instance_list 非 instances，approval-bot 注释同坑）。
+- **实现**：新增 src/services/approvalImageService.js——申请编号 serial → instances/query（TICKET_APPROVAL_CODE 定义 code+30 天窗分片，起点=工单发起时间字段）→ 实例详情 form（**单条 JSON 字符串**，parse 后 image 控件 value=CDN URL 数组）→ 下载 → uploadImImage（client.js 新增，/im/v1/images multipart）→ image_key。缓存 serial→keys 永久（image_key 不随 CDN 签名过期）+ inflight 并发去重 + 失败 warn 一次防刷屏；未配置/任何失败降级现状文本，不炸播报主链。
+- **接线**：bot.js 三卡（Open/Assign/Reannounce）加 imageKeys 参数+buildImageElements（img 元素，单卡上限 9 张）；ticketService 播报循环外预取一次、rebuildKeywordCard async 化（接单词刷新走缓存命中）。
+- **测试**：stub-test-approval-images.js 15 断言（serial 提取/form 解析/分片查询/全链转存/缓存/降级/并发去重）；task-gate 出站 fetch 守卫 2→3 处（uploadImImage 带 30s signal 合规）；全套 9 套 152 断言全绿。
+- **调试轶事**：同毫秒窗口竞态——发起时间与查询同毫秒时 `while (start < now)` 死不进循环、`end<=start` 兜底误放查询前把窗口又挡掉（`<=`+查询后兜底才对）；deferred 化 inflight 注册（IIFE 首个 await 让出后才 set 的微任务时序在同步 mock 下摇摆）。生产无此场景但边界语义已修正。
+- **实证**：真单 202611140001 全链 3s→image_key（回读 200 image/jpeg 129KB）；卡元素 {tag:img, img_key, alt:工单附图}。
