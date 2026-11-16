@@ -71,7 +71,31 @@ async function requestAPI(method, path, body) {
   }
 }
 
+/**
+ * 上传图片到飞书 IM 图片库（卡片 img 元素用 image_key）。
+ * 与 requestAPI 分开实现：multipart form-data，不能走 JSON content-type。
+ * @param {Buffer|Uint8Array} buf 图片二进制
+ * @param {string} [filename] 文件名（默认 img.jpg）
+ * @returns {Promise<string>} image_key
+ */
+async function uploadImImage(buf, filename = 'img.jpg') {
+  const token = await getTenantAccessToken();
+  const form = new FormData();
+  form.append('image_type', 'message');
+  form.append('image', new Blob([buf], { type: 'image/jpeg' }), filename);
+  const res = await fetch(`${BASE_URL}/im/v1/images`, {
+    method: 'POST',
+    signal: AbortSignal.timeout(30000),
+    headers: { Authorization: `Bearer ${token}` },
+    body: form,
+  });
+  const j = await res.json().catch(() => ({}));
+  if (j.code !== 0) throw new Error(`上传图片失败 (${j.code}): ${j.msg || res.status}`);
+  return j.data.image_key;
+}
+
 module.exports = {
   getTenantAccessToken,
   requestAPI,
+  uploadImImage,
 };

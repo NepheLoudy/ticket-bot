@@ -147,6 +147,9 @@ const config = {
   },
 
   broadcast: {
+    // 工单审批定义 code（2026-11-16 曼波给）：配了才启用「附图上卡」——播报卡拉审批实例
+    // form 的 image 控件 CDN 图转存 im image_key 内嵌；未配置/失败降级为现状（附件链接文本）
+    approvalCode: process.env.TICKET_APPROVAL_CODE || '',
     // 路由字段（面向组别，多选 → 一条工单并行分发到多个组群）
     routeField,
     routes: parseRouteTargets(process.env.GROUP_ROUTES),

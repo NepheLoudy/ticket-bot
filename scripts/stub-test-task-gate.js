@@ -45,8 +45,8 @@ assert.strictEqual(typeof fast.tryEnter(), 'number', '⑤ 新令牌 leave 后闸
 const clientSrc = fs.readFileSync(path.join(__dirname, '../src/feishu/client.js'), 'utf8');
 const fetchCount = (clientSrc.match(/await fetch\(/g) || []).length;
 const signalCount = (clientSrc.match(/signal: AbortSignal\.timeout\(/g) || []).length;
-assert.strictEqual(fetchCount, 2, '⑥ client.js 应恰有两处 fetch（token + requestAPI）');
-assert.strictEqual(signalCount, 2, '⑥ client.js 两处 fetch 都必须挂 AbortSignal.timeout');
+assert.strictEqual(fetchCount, 3, '⑥ client.js 应恰有三处 fetch（token + requestAPI + uploadImImage）');
+assert.strictEqual(signalCount, 3, '⑥ client.js 三处 fetch 都必须挂 AbortSignal.timeout');
 const botSrc = fs.readFileSync(path.join(__dirname, '../src/feishu/bot.js'), 'utf8');
 assert.ok(/signal: AbortSignal\.timeout\(/.test(botSrc), '⑥ bot.js webhook fetch 必须挂 AbortSignal.timeout');
 

@@ -203,12 +203,25 @@ function openKeywordLine(kw) {
 }
 
 /**
+ * 工单附图元素（2026-11-16：审批实例 image 控件已转存的 im image_key → 卡内 img 元素）。
+ * 空数组返回空展开（未配置 TICKET_APPROVAL_CODE / 转存失败的降级现状）。
+ */
+function buildImageElements(imageKeys) {
+  return (imageKeys || []).map((key) => ({
+    tag: 'img',
+    img_key: key,
+    alt: { tag: 'plain_text', content: '工单附图' },
+  }));
+}
+
+/**
  * 未指定负责人：面向组别的群聊里发布「询问是否有人接单」的公布消息
  * 包含接单确认提醒：@应用机器人 发送「接单/接单N」（网关把该消息事件秒级转发到本服务）
  * @param {object} record 源记录
  * @param {string} kw 该群当前生效的接单词（默认「接单」）
+ * @param {Array<string>} [imageKeys] 已转存的附图 image_key（approvalImageService 预取）
  */
-function buildTicketOpenCard(record, kw = '接单') {
+function buildTicketOpenCard(record, kw = '接单', imageKeys = []) {
   const { record_id, fields } = record;
   const title = getTicketTitle(fields, record_id);
 
@@ -217,6 +230,7 @@ function buildTicketOpenCard(record, kw = '接单') {
     { tag: 'hr' },
     { tag: 'markdown', content: '📬 有新工单发布，请组内同学尽快响应' },
     ...buildTicketFieldLines(fields, [config.broadcast.titleField]),
+    ...buildImageElements(imageKeys),
     { tag: 'hr' },
     { tag: 'markdown', content: openKeywordLine(kw) },
     { tag: 'note', elements: [{ tag: 'plain_text', content: '机器人会自动更新项目状态为"进行中"' }] },
@@ -242,8 +256,9 @@ function assignKeywordLine(kw) {
  * @param {object} record 源表记录
  * @param {{id: string, name: string}|null} assignee 指定负责人
  * @param {string} kw 该群当前生效的接单词（默认「接单」）
+ * @param {Array<string>} [imageKeys] 已转存的附图 image_key
  */
-function buildTicketAssignCard(record, assignee, kw = '接单') {
+function buildTicketAssignCard(record, assignee, kw = '接单', imageKeys = []) {
   const { record_id, fields } = record;
   const title = getTicketTitle(fields, record_id);
   const at = buildAtTag(assignee?.id);
@@ -253,6 +268,7 @@ function buildTicketAssignCard(record, assignee, kw = '接单') {
     { tag: 'hr' },
     { tag: 'markdown', content: `📬 ${at} **${sanitizeCardText(assignee?.name || '')}** 有新工单发布，已为你自动绑定接单` },
     ...buildTicketFieldLines(fields, [config.broadcast.titleField]),
+    ...buildImageElements(imageKeys),
     { tag: 'hr' },
     { tag: 'markdown', content: assignKeywordLine(kw) },
     { tag: 'note', elements: [{ tag: 'plain_text', content: '确认后机器人会自动更新项目状态为"进行中"并推进审批' }] },
@@ -275,8 +291,9 @@ function buildTicketAssignCard(record, assignee, kw = '接单') {
  * @param {number} elapsedHours 超时小时数
  * @param {string} groupName 组别名称（用于查找组长）
  * @param {string} kw 该群当前生效的接单词（默认「接单」）
+ * @param {Array<string>} [imageKeys] 已转存的附图 image_key
  */
-function buildReannounceCard(record, elapsedHours, groupName, kw = '接单') {
+function buildReannounceCard(record, elapsedHours, groupName, kw = '接单', imageKeys = []) {
   const { record_id, fields } = record;
   const title = getTicketTitle(fields, record_id);
 
@@ -290,6 +307,7 @@ function buildReannounceCard(record, elapsedHours, groupName, kw = '接单') {
     { tag: 'markdown', content: `⚠️ **此工单已超时 ${elapsedHours} 小时，目前仍无人接单**` },
     { tag: 'markdown', content: '🚨 **紧急提醒**：请组内成员尽快响应！' },
     ...buildTicketFieldLines(fields, [config.broadcast.titleField]),
+    ...buildImageElements(imageKeys),
     { tag: 'hr' },
     { tag: 'markdown', content: '🙋 **有兴趣接单的同学请在群内响应**' },
     { tag: 'markdown', content: openKeywordLine(kw) },
@@ -334,4 +352,5 @@ module.exports = {
   buildTicketOpenCard,
   buildTicketAssignCard,
   buildReannounceCard,
+  buildImageElements,
 };

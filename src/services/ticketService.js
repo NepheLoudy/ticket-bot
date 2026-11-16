@@ -2,6 +2,7 @@ const config = require('../config');
 const bitableApi = require('../feishu/bitable');
 const syncService = require('./syncService');
 const plaza = require('./plaza');
+const approvalImages = require('./approvalImageService');
 const {
   sendCardToTarget,
   describeTarget,
@@ -530,16 +531,17 @@ async function revokeTicketReminderCards(recordId, scene = 'revoke') {
 }
 
 /**
- * 按登记类型整卡重建（接单词换成 newKw；构建函数以源表记录为输入）
+ * 按登记类型整卡重建（接单词换成 newKw；构建函数以源表记录为输入）。
+ * 附图转存走缓存（首播已转存过，此处命中内存秒回），async 因附图预取。
  */
-function rebuildKeywordCard(entry, newKw, record) {
+async function rebuildKeywordCard(entry, newKw, record) {
   const f = record.fields;
   switch (entry.kind) {
     case 'open':
-      return buildTicketOpenCard(record, newKw);
+      return buildTicketOpenCard(record, newKw, await approvalImages.fetchImageKeys(record));
     case 'assign': {
       const assignee = config.assign.assigneeField ? (f[config.assign.assigneeField]?.[0] || null) : null;
-      return buildTicketAssignCard(record, assignee, newKw);
+      return buildTicketAssignCard(record, assignee, newKw, await approvalImages.fetchImageKeys(record));
     }
     case 'multi': {
       const acceptors = Array.isArray(f[config.assign.supplementField])
@@ -550,7 +552,7 @@ function rebuildKeywordCard(entry, newKw, record) {
       return buildMultiAcceptCard({ title: getTicketTitle(f, record.record_id), acceptors, windowUntil, kw: newKw });
     }
     case 'reannounce':
-      return buildReannounceCard(record, entry.ctx.elapsedHours, entry.ctx.groupName, newKw);
+      return buildReannounceCard(record, entry.ctx.elapsedHours, entry.ctx.groupName, newKw, await approvalImages.fetchImageKeys(record));
     default:
       return null;
   }
@@ -587,7 +589,7 @@ async function refreshAcceptKeywordCards(chatIds = null, records = null) {
     }
     if (member.kw === entry.kw) continue;
 
-    const card = rebuildKeywordCard(entry, member.kw, member.record);
+    const card = await rebuildKeywordCard(entry, member.kw, member.record);
     if (!card) continue;
     const prevKw = entry.kw;
     try {
@@ -859,13 +861,15 @@ async function broadcastTicketLocked(record, scene, options = {}) {
 
   const results = [];
   const sentChatIds = [];
+  // 附图预取（循环外一次）：审批实例 image 控件转存 im image_key；未配置/失败返回空=现状降级
+  const imageKeys = await approvalImages.fetchImageKeys(record);
   for (const target of targets) {
     const isAssignCard = assignValue === config.assign.yesValue;
     const member = target.chatId ? acceptQueues.get(target.chatId)?.find((q) => q.recordId === recordId) : null;
     const kw = member?.kw || '接单';
     const card = isAssignCard
-      ? buildTicketAssignCard(record, assignee, kw)
-      : buildTicketOpenCard(record, kw);
+      ? buildTicketAssignCard(record, assignee, kw, imageKeys)
+      : buildTicketOpenCard(record, kw, imageKeys);
     try {
       const sent = await sendCardToTarget(target, card);
       if (target.chatId) {
