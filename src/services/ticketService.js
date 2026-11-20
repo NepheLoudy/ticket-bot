@@ -214,8 +214,11 @@ async function collectMultiNoticeTargets(fields, acceptors, extraChatId) {
     if (!person?.id) continue;
     const groups = await resolvePersonGroups(routeGroups, person);
     for (const group of groups) {
-      const route = config.broadcast.routes.find((r) => r.value === group);
-      if (route?.chatId) chatIds.add(route.chatId);
+      // 同组别多群共享（2026-11-21 曼波定：梯队培训群与机械组群共享工单池）——
+      // 遍历全部路由取所有同 value 的群，find 只取第一条会让共享群收不到多人单通告
+      for (const route of config.broadcast.routes) {
+        if (route.value === group && route.chatId) chatIds.add(route.chatId);
+      }
     }
   }
   return [...chatIds].map((id) => config.broadcast.routes.find((r) => r.chatId === id) || { chatId: id });
