@@ -667,3 +667,11 @@
 - **测试**：stub-test-approval-images.js 15 断言（serial 提取/form 解析/分片查询/全链转存/缓存/降级/并发去重）；task-gate 出站 fetch 守卫 2→3 处（uploadImImage 带 30s signal 合规）；全套 9 套 152 断言全绿。
 - **调试轶事**：同毫秒窗口竞态——发起时间与查询同毫秒时 `while (start < now)` 死不进循环、`end<=start` 兜底误放查询前把窗口又挡掉（`<=`+查询后兜底才对）；deferred 化 inflight 注册（IIFE 首个 await 让出后才 set 的微任务时序在同步 mock 下摇摆）。生产无此场景但边界语义已修正。
 - **实证**：真单 202611140001 全链 3s→image_key（回读 200 image/jpeg 129KB）；卡元素 {tag:img, img_key, alt:工单附图}。
+## v? · 2026-11-21 · 随本提交落地 · feat
+
+**工单播报池/机制池多群共享（曼波定：梯队培训群 oc_e8092d051 与机械组群共享「机械组」别）**
+
+- **配置层**：GROUP_ROUTES 支持同组别多条路由——追加「机械组=oc_e8092d051df682b18a3c3c59fd9d9bea」（裸 chat_id，应用机器人 im 直发卡片；sendCardToTarget 的 chatId 优先/webhook 回退语义天然支持）。
+- **机制层修复**：collectMultiNoticeTargets 的多人单 acceptors 通告此前 `find` 只取同 value 第一条路由——共享群收不到多人单通告；改全量遍历同 value 路由（collectTargets 主播报/computeAcceptQueues 接单队列本就是全量遍历，天然多群）。
+- **机制池成立性核查**（全链）：群内接单指令=gateway「contains 接单+mention→ticket」不限群 ✓；ticket-bot chatService 无群白名单（仅 ignoreChatIds 排除）✓；接单队列/接单词按群独立派生（computeAcceptQueues→collectTargets 全量遍历）✓；结单/撤回/刷新按 registry chatId ✓。新群零额外配置即获完整机制池。
+- **部署验证**：生产 config 读回机械组路由 2 条（机械组群 webhook + 梯队培训群应用直发）；全量 9 套 152 断言全绿。
