@@ -124,8 +124,10 @@ const config = {
 
   plaza: {
     // 动态广场事件流（机器人项目看板「动态广场」表，供多维表格仪表盘展示）
-    appToken: process.env.PLAZA_BITABLE_APP_TOKEN || 'ZlVZbXDkRayUzSsFRiycznmZn5b',
-    tableId: process.env.PLAZA_BITABLE_TABLE_ID || 'tbld1zHXkTzko20p',
+    // 2026-11-22 安全审计 P2：资源 ID 字面量兜底移除（换 base/表漏改隐患），纯 env 读取 fail-closed——
+    // PLAZA_ENABLED 默认关，未配键时 plaza 写入静默停用即符合预期；现网值见项目 AGENTS.md。
+    appToken: process.env.PLAZA_BITABLE_APP_TOKEN || '',
+    tableId: process.env.PLAZA_BITABLE_TABLE_ID || '',
   },
 
   bitable: {

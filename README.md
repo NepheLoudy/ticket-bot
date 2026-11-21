@@ -279,9 +279,11 @@ node scripts/stub-test-quiet-flush.js  # 离线桩测试：晚间静默冲刷竞
 node scripts/stub-test-revoke.js       # 离线桩测试：工单终态联动撤回——事件撤回幂等/播报守卫/对账补偿/队列剔除/失败分支（2026-09-27）
 node scripts/stub-test-card-sanitize.js # 离线桩测试：播报卡消毒——<at>注入/链接语法/行首标题符剥除（2026-10-30）
 node scripts/stub-test-task-gate.js    # 离线桩测试：定时任务互斥闸门+看门狗——重入拒绝/强制复位/令牌防误复位/出站fetch无裸奔（2026-11-03）
+node scripts/stub-test-approval-images.js # 离线桩测试：工单附图上卡——serial提取/form解析/分片查询/全链转存/缓存/降级/并发去重（2026-11-16）
+node scripts/stub-test-discover-env.js   # 离线桩测试：discover 资源ID环境变量化——纯env解析/fail-closed非零退出/请求URL走查（2026-11-22）
 ```
 
-`npm test` = 八套全跑（push.js 部署闸门）。
+`npm test` = 十套全跑（push.js 部署闸门）。
 
 ---
 

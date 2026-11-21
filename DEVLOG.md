@@ -2,7 +2,7 @@
 
 版本隔离单位：一次 `npm run push`（= 一次 git 提交 + 一次部署）。v1~v42 于 2026-09-04 按提交历史回溯编号，此后每次 push 在文末追加新版本（规则见顶层 [AGENTS.md](../../AGENTS.md)）。
 
-当前最新：**v97**（2026-11-21，8fbf193，工单播报池/机制池多群共享——梯队培训群与机械组群共享「机械组」别：GROUP_ROUTES 同组别多路由+collectMultiNoticeTargets 全量遍历修复，9 套 152 断言全绿）。上一版 v96（2026-11-16，356459a，工单附图上卡——审批实例附图转 image_key 上卡，15 断言）。上一版 v95（2026-11-05，全量审查收口——by-group 回传 unconfirmedHours 真相源+push.js PM2 常量化，8 套全绿）。上一版 v94（2026-11-03，对账卡死 48.8h 事故修复批——出站 fetch 无界清零 + 定时任务看门狗闸门，新增 stub-test-task-gate 6 断言，全量 8 套全绿；v93 sanitize 同批补落地现网）。
+当前最新：**v98**（2026-11-22，随本提交落地，安全审计 P2 收口——discover.js BITABLE_APP_TOKEN 环境变量化 fail-closed（字面量兜底清除+resolveAppToken 纯函数+缺失非零退出）+src/config.js plaza 块字面量双清（appToken/tableId 纯 env）+新桩 stub-test-discover-env 8 断言接链，npm test 八套→十套全绿）。上一版 v97（2026-11-21，8fbf193，工单播报池/机制池多群共享——梯队培训群与机械组群共享「机械组」别：GROUP_ROUTES 同组别多路由+collectMultiNoticeTargets 全量遍历修复，9 套 152 断言全绿）。上一版 v96（2026-11-16，356459a，工单附图上卡——审批实例附图转 image_key 上卡，15 断言）。上一版 v95（2026-11-05，全量审查收口——by-group 回传 unconfirmedHours 真相源+push.js PM2 常量化，8 套全绿）。上一版 v94（2026-11-03，对账卡死 48.8h 事故修复批——出站 fetch 无界清零 + 定时任务看门狗闸门，新增 stub-test-task-gate 6 断言，全量 8 套全绿；v93 sanitize 同批补落地现网）。
 上一版：**v92**（2026-10-15，DDL 播报「已指派待确认」分桶联动批，随本提交落地）。
 上一版：**v91**（锚 61512b1，HEAD；v154 审查批校正头部指针滞后——该高频复发项第 4 次）。上上版 v90（2026-10-10，quietHours 积压身份键唯一化批——git 先行入库，部署待小电脑上线补跑）。上一版 v89（2026-10-07，NAS_*→DEPLOY_* 连接键改名批）。上一版 v88（2026-09-27，`502ad50`，已上线——09-27 22:17 部署批，含 v87；ensure-ticket-fields 已于部署前执行）。上一版 v87（第二轮对抗审查修复批）。上一版 v86（组别系数注释）。上一版 v85（全量审查批，`d722e26`）。上一版 v83（workload 单级 groups，`45a35d2`）。上一版 v82（workload-by-person 按人端点，`6e3f348`）。）
 
@@ -675,3 +675,11 @@
 - **机制层修复**：collectMultiNoticeTargets 的多人单 acceptors 通告此前 `find` 只取同 value 第一条路由——共享群收不到多人单通告；改全量遍历同 value 路由（collectTargets 主播报/computeAcceptQueues 接单队列本就是全量遍历，天然多群）。
 - **机制池成立性核查**（全链）：群内接单指令=gateway「contains 接单+mention→ticket」不限群 ✓；ticket-bot chatService 无群白名单（仅 ignoreChatIds 排除）✓；接单队列/接单词按群独立派生（computeAcceptQueues→collectTargets 全量遍历）✓；结单/撤回/刷新按 registry chatId ✓。新群零额外配置即获完整机制池。
 - **部署验证**：生产 config 读回机械组路由 2 条（机械组群 webhook + 梯队培训群应用直发）；全量 9 套 152 断言全绿。
+## v98 · 2026-11-22 · 随本提交落地 · fix（安全审计 P2 收口）
+
+**资源 ID 字面量兜底清除——discover.js 环境变量化 fail-closed + plaza 配置同族清理（2026-11-22 git 体检批）**
+
+- **scripts/discover.js**：BITABLE_APP_TOKEN 字面量兜底移除（换 base 漏改隐患），新增 resolveAppToken 纯函数——trim 空白视同缺失、main() 首行校验先于任何网络请求、缺失打印键名/含义/行内指定用法并 exit 1（fail-closed）；require.main 守卫 + module.exports 供离线桩。键名裁定：沿仓内约定 BITABLE_APP_TOKEN（8 个 probe 兄弟脚本与 src/config 同键），不另立 APP_TOKEN 防配置分叉。
+- **src/config.js plaza 块**：PLAZA_BITABLE_APP_TOKEN / PLAZA_BITABLE_TABLE_ID 字面量兜底双清（同族资源 ID 隐患）——纯 env 读取空串兜底；PLAZA_ENABLED 默认关零行为变化，启用而未配键时 fail-closed。
+- **测试**：新增 stub-test-discover-env.js 8 断言（fetch 桩验 env 值进请求 URL 走查 + 子进程置空 env 验非零退出与错误文案）接进 npm test 链（八套→十套）；全套 10 套 159 断言全绿。
+- **文档**：.env.example BITABLE_APP_TOKEN 注释增强（=机器人项目看板 base 的 app_token，资源标识符非密钥，现网值见项目 AGENTS.md）；README 测试节补 approval-images（v96 漏登记）与 discover-env 两行、口径改「十套全跑」。
